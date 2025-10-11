@@ -98,7 +98,7 @@ def _configure_logger(
     should_log_to_stdout = torch_env.is_main_process or not log_to_stdout_only_in_main_process
     if should_log_to_stdout:
         handler = logging.StreamHandler(stream=sys.stdout)
-        handler.setLevel(logging.DEBUG)
+        handler.setLevel(logging.INFO)
 
         formatter: logging.Formatter
         if color:

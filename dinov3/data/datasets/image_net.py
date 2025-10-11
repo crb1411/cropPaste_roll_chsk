@@ -172,7 +172,8 @@ class ImageNet(ExtendedVisionDataset):
 
     def __len__(self) -> int:
         entries = self._get_entries()
-        assert len(entries) == self.split.length
+        # assert len(entries) == self.split.length
+        logger.info(f"len(entries) = {len(entries)}")
         return len(entries)
 
     def _load_labels(self, labels_path: str) -> List[Tuple[str, str]]:

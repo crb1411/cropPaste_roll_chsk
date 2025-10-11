@@ -74,8 +74,10 @@ def get_cfg_from_args(args: DinoV3SetupArgs, multidistillation=False, strict=Tru
         overrides.append(f"train.output_dir={os.path.realpath(args.output_dir)}")
 
     # Config file
-    cfg = OmegaConf.load(args.config_file)
-
+    if os.path.isfile(args.config_file):
+        cfg = OmegaConf.load(args.config_file)
+    else:
+        cfg = {}
     # Command line overrides
     opts_cfg = OmegaConf.from_cli(overrides)
 
@@ -101,6 +103,7 @@ def setup_config(args: DinoV3SetupArgs, strict_cfg=True):
     # dump config before modifying so it can be reloaded
     if args.output_dir is not None:
         write_config(cfg, args.output_dir)
+    logger.info(f'Output directory: {args.output_dir}')
     # modify the config inplace by applying scaling rules
     apply_scaling_rules_to_cfg(cfg)
     return cfg
@@ -189,7 +192,7 @@ def setup_job(
     if logging_enabled:
         setup_logging(
             output=output_dir,
-            level=logging.INFO,
+            level=logging.DEBUG,
             log_to_stdout_only_in_main_process=restrict_print_to_main_process,
         )
 

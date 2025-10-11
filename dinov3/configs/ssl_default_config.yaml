@@ -62,11 +62,11 @@ gram:
   global_teacher_resize_antialias: false  # Whether to use antialiasing when resizing the outputs of the gram teacher
   loss_weight_schedule: null  # (dict): If not None, use a schedule for the loss weight instead of `loss_weight`
 train:
-  batch_size_per_gpu: 64
-  dataset_path: ImageNet:split=TRAIN
+  batch_size_per_gpu: 128
+  dataset_path: ImageNet:split=TRAIN:root=/mnt/data/train/crb/env_init/data/dataset_imagenet/tiny-imagenet:extra=/mnt/data/train/crb/env_init/data/dataset_imagenet/tiny-imagenet_extra
   data_config: null
-  output_dir: .
-  saveckp_freq: 20
+  output_dir: /mnt/data/train/crb/train_out/train_img
+  saveckp_freq: 50
   seed: 0
   num_workers: 10
   OFFICIAL_EPOCH_LENGTH: 1250
@@ -127,11 +127,11 @@ hrft:  # non-hrft'd student
   enabled: false
   checkpoint_path: ""  # teacher_checkpoint path
 optim:
-  epochs: 100
+  epochs: 1000
   optimizer: adamw
   weight_decay: 0.04
   weight_decay_end: 0.4
-  lr: 0.001
+  lr: 0.0001
   warmup_epochs: 10
   min_lr: 1.0e-06
   schedule_trunc_extra: 0.0  # Compute the schedule for (1 + schedule_trunc_extra) steps and truncate, .25 is a good choice
