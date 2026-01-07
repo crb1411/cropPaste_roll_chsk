@@ -291,7 +291,7 @@ if __name__ == "__main__":
     img = torch.rand(3, 224, 224)
     from omegaconf import DictConfig, OmegaConf
     cfg = OmegaConf.load("/data/work/git_proj/dinov3/dinov3/configs/ssl_default_config.yaml")
-    sys.path.append(str(REPO_ROOT.parent / "resize_2"))
+    # sys.path.append(str(REPO_ROOT.parent / "resize_2"))
     from dinov3.new_train.data.imgnet import ImageNetResizeDataset
     
     from dinov3.data import (
