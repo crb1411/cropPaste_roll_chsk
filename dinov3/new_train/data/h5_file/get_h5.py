@@ -25,41 +25,45 @@ INDEX_DTYPE = np.dtype([
     ("patch_id", np.int16)
 ])
 
-
 bad_h5 = []
-
-def count_patches(file_path: str, out_dir: str = '/mnt/dcs_ai/crb/vl/test_code/h5_file') -> int:
-    """返回 h5 文件中 'patches' 的长度"""
+def count_patches(path):
     try:
-        with h5py.File(file_path, "r") as h5_f:
-            if h5_f['patches'].shape[-1] == 3:
-                return len(h5_f["patches"]) 
-            else:
-                with open("bad_shape.txt", "a") as f:
-                    f.write(f"{file_path}\t{h5_f['patches'].shape}\n")
-                return None
+        with h5py.File(path, "r") as f:
+            return (path, len(f["patches"]), None)   # (路径, 计数, 错误)
     except Exception as e:
-        print(f"Error reading {file_path}: {e}")
-        with open("bad_h5.txt", "a") as f:
-            f.write(file_path + "\n")
-        return None
-
+        return (path, None, repr(e))
 
 def scan_h5_dir(file_path, num_workers=None):
     """多进程扫描所有 h5 文件"""
     if num_workers is None:
         num_workers = max(1, cpu_count() - 1)
-    with open(file_path, "r", encoding="utf-8") as f:
-        file_list = [line.strip() for line in f.readlines()]
+    if file_path.endswith('.txt'):
+        with open(file_path, "r", encoding="utf-8") as f:
+            file_list = [line.strip() for line in f.readlines()]
+    else:
+        import pandas as pd
+        file_list = pd.read_csv(file_path)['h5_path'].to_list()
+        file_list = [os.path.join('/mnt/unicom', h5_ph) for h5_ph in file_list]
+
+    print(f'len h5: {len(file_list)}')
 
     with Pool(num_workers) as pool:
-        patch_counts = list(tqdm(pool.imap(count_patches, file_list), total=len(file_list)))
-    file_list, patch_counts = zip(*[(f, p) for f, p in zip(file_list, patch_counts) if p is not None])
-    print(f"Found {len(file_list)} h5 files, {len(bad_h5)} bad h5 files")
+        results = list(tqdm(pool.imap_unordered(count_patches, file_list), total=len(file_list)))
+
+    ok   = [(p, n) for p, n, err in results if n is not None]
+    file_list, patch_counts = zip(*ok) if ok else ([], [])
+    bad  = [(p, err) for p, n, err in results if n is None]
+    print(f"Found {len(ok)} h5 files, {len(bad)} bad h5 files")
+    # bad_h5, _ = zip(*[(f, p) for f, p in zip(file_list, patch_counts) if p is None])
+
+    # print(f"Found {len(file_list)} h5 files, {len(bad_h5)} bad h5 files")
     # 更新 file_list 
-    # with open(file_path, "w", encoding="utf-8") as f:
-    #     for file in file_list:
-    #         f.write(file + "\n")
+    if len(bad)>0:
+        file_path_end = file_path.split(".")[-1]
+        print(f"bad saved -> {file_path.replace(f'.{file_path_end}', '_bad_data.txt')}")
+        with open(file_path.replace(f'.{file_path_end}', '_bad_data.txt'), "w", encoding="utf-8") as f:
+            for p, err in bad:
+                f.write(f"{p}\t{err}\n")
     return file_list, patch_counts
 
 def _write_index_chunk(args):
@@ -79,7 +83,7 @@ def build_index_memmap(file_list, patch_counts, out_npy="index.npy", num_workers
 
     total = sum(patch_counts)
     print(f"Total patches: {total:,}")
-
+    os.makedirs(os.path.dirname(out_npy), exist_ok=True)
     # ==== 预分配 memmap ====
     mmap = np.memmap(out_npy, dtype=INDEX_DTYPE, mode="w+", shape=(total,))
     del mmap  # 关闭句柄，子进程才能访问
@@ -106,15 +110,16 @@ def build_index_memmap(file_list, patch_counts, out_npy="index.npy", num_workers
 
     
 if __name__ == "__main__":
-    # list_h5_files("/mnt/unicom/bundles", "/mnt/dcs_ai/crb/vl/test_code/h5_file/h5_list.txt")
+    # list_h5_files("/mnt/unicom/bundles", "/mnt/crb/vl/test_code/h5_file/h5_list.txt")
     # Step1: 扫描所有 h5 文件，得到每个文件 patch 数
-    file_list, patch_counts = scan_h5_dir("/mnt/dcs_ai/crb/vl/test_code/h5_file/h5_list.txt", num_workers=128)
+
+    file_list, patch_counts = scan_h5_dir("/mnt/local09/train/crb/data/h5_data_unicom_nas/finish_h5.txt", num_workers=128)
 
     # # Step2: 建立全局索引 (memmap)
-    build_index_memmap(file_list, patch_counts, out_npy="/mnt/dcs_ai/crb/vl/test_code/h5_file/patch_index_3.npy", num_workers=128)
+    build_index_memmap(file_list, patch_counts, out_npy="/mnt/local09/train/crb/data/h5_data_unicom_nas_250k/h5_patch_index.npy", num_workers=128)
 
     # Step3: 读取索引
-    index_path = "/mnt/dcs_ai/crb/vl/test_code/h5_file/patch_index_3.npy"
+    index_path = "/mnt/local09/train/crb/data/h5_data_unicom_nas_250k/h5_patch_index.npy"
     index = np.memmap(index_path, dtype=INDEX_DTYPE, mode="r")
     print(index.shape, index.dtype)
     print(index[:5])  # [(0,0) (0,1) (0,2) ...]

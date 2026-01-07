@@ -1,5 +1,5 @@
 MODEL:
-  META_ARCHITECTURE: SSLMetaArch
+  META_ARCHITECTURE: SSLAugmentedMetaArchV2
   DEVICE: cuda
   WEIGHTS: ''
   DTYPE: float32
@@ -169,6 +169,32 @@ crops:
   - 0.229
   - 0.224
   - 0.225
+  use_legacy_augmentor: true
+  legacy_augmentor_switch: null  # set dict for options, e.g. {crop_background_mode: "random", crop_background_min: 0.0, crop_background_max: 1.0}
+augment_loss:
+  crop_resize_loss_weight: 1.0       # legacy CropPaste CE on head logits
+  crop_resize_temp: 0.06
+  patch_shuffle_loss_weight: 0.1     # iBOT-style CE with shift perm_idx
+  patch_shuffle_temp: 0.1
+  patch_shuffle_patch_ratio: 1.0     # fraction of patches to sample for iBOT CE (1.0 = all)
+  color_anchor_loss_weight: 0.1      # anchor on CLS bottleneck
+  color_anchor_loss_type: cosine
+  anchor_patch_loss_weight: 0.1      # anchor on uncovered bg patches
+  anchor_patch_loss_type: cosine
+  anchor_patch_types:
+  - white
+  - gray
+  - black
+  anchor_bottleneck_dim: 256
+  anchor_cls_weight: 0.0
+  anchor_bg_patch_weight: 0.0
+  save_debug_dir: null
+chsk:
+  boost_alpha: 0.3
+  boost_w_max: 50.0
+  boost_threshold_divisor: 100.0
+  boost_eps: 1e-6
+  logits_temp_max: 30
 evaluation:
   eval_period_iterations: 12500
   low_freq_every: 5

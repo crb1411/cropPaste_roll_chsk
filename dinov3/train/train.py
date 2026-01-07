@@ -17,6 +17,8 @@ import torch
 import torch.distributed
 from torch.distributed._tensor import DTensor
 
+import sys 
+sys.path.append('/data/work/git_proj/dinov3')
 import dinov3.distributed as distributed
 from dinov3.checkpointer import (
     find_latest_checkpoint,
@@ -38,7 +40,8 @@ from dinov3.data import (
 from dinov3.logging import MetricLogger, setup_logging
 from dinov3.train.cosine_lr_scheduler import CosineScheduler, linear_warmup_cosine_decay
 from dinov3.train.multidist_meta_arch import MultiDistillationMetaArch
-from dinov3.train.ssl_meta_arch import SSLMetaArch
+from dinov3.train import SSLMetaArch
+
 
 assert torch.__version__ >= (2, 1)
 torch.backends.cuda.matmul.allow_tf32 = True  # pytorch 1.12 sets this to false by default
@@ -421,11 +424,13 @@ def do_train(cfg, model, resume=False):
         global_batch_size = cfg.train.batch_size_per_gpu * distributed.get_world_size()
 
     # Build data loader
-    data_loader = build_multi_resolution_data_loader_from_cfg(
-        cfg=cfg,
-        model=model,
-        start_iter=start_iter,
-    )
+    # data_loader = build_multi_resolution_data_loader_from_cfg(
+    #     cfg=cfg,
+    #     model=model,
+    #     start_iter=start_iter,
+    # )
+    from dinov3.train import _smoke_test_png_dataset
+    data_loader, _ = _smoke_test_png_dataset()
 
     # Metric logging
     logger.info("Starting training from iteration %d", start_iter)

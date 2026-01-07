@@ -6,9 +6,10 @@ except Exception:
     openslide = None
 
 class SlideLRU:
-    def __init__(self, max_open=8, open_fn=None):
+    def __init__(self, max_open=100, open_fn=None, shared_val=None):
         assert max_open >= 1
         self.max_open = max_open
+        self.shared_val = shared_val
         self.open_fn = open_fn or (lambda p: openslide.OpenSlide(p))
         self.cache = OrderedDict()  # path -> handle
 
@@ -25,6 +26,8 @@ class SlideLRU:
         if len(self.cache) > self.max_open:
             _, old = self.cache.popitem(last=False)
             self._safe_close(old)
+        if self.shared_val is not None:
+            self.shared_val.value = len(self.cache)
         return h
 
     def close(self, path: str):
@@ -48,3 +51,15 @@ class SlideLRU:
 # slide = lru.get("/data/a.svs")
 # img = slide.read_region((0,0), 0, (512,512))
 # lru.close_all()
+
+if __name__ == "__main__":
+    lru = SlideLRU(max_open=8)
+    svs_path = "/data/work/ruijin/data/CMU-21744683275045_2864_1.svs"
+    slide = lru.get(svs_path)
+    print(len(lru.cache))
+    img = slide.read_region((0,0), 0, (512,512))
+    lru.close(svs_path)
+    print(len(lru.cache))
+    
+    
+    

@@ -4,6 +4,8 @@
 # the terms of the DINOv3 License Agreement.
 
 import torch
+
+
 import torch.distributed as torch_dist
 import torch.nn as nn
 import torch.nn.functional as F
@@ -35,7 +37,10 @@ class KoLeoLoss(nn.Module):
         Args:
             student_output (BxD): backbone output of student
         """
-        with torch.autocast("cuda", enabled=False):
+        device_type = student_output.device.type
+        if device_type not in ("cuda", "npu", "cpu"):
+            device_type = "cpu"
+        with torch.autocast(device_type, enabled=False):
             student_output = F.normalize(student_output, eps=eps, p=2, dim=-1)
             indices = self.pairwise_NNs_inner(student_output)
             distances = self.pdist(student_output, student_output[indices])  # BxD, BxD -> B
@@ -69,7 +74,10 @@ class KoLeoLossDistributed(nn.Module):
         Args:
             student_output (BxD): backbone output of student
         """
-        with torch.autocast("cuda", enabled=False):
+        device_type = student_output.device.type
+        if device_type not in ("cuda", "npu", "cpu"):
+            device_type = "cpu"
+        with torch.autocast(device_type, enabled=False):
             student_output = F.normalize(student_output, eps=eps, p=2, dim=-1)  # local_B x D
 
             if dist.is_enabled():

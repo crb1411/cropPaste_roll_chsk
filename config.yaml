@@ -63,7 +63,7 @@ gram:
   loss_weight_schedule: null
 train:
   batch_size_per_gpu: 64
-  dataset_path: ImageNet:split=TRAIN:root=/mnt/dcs_ai/crb/vl/dataset_imagenet/tiny-imagenet:extra=/mnt/dcs_ai/crb/vl/dataset_imagenet/tiny-imagenet_extra
+  dataset_path: ImageNet:split=TRAIN:root=/mnt/crb/vl/dataset_imagenet/tiny-imagenet:extra=/mnt/crb/vl/dataset_imagenet/tiny-imagenet_extra
   data_config: null
   output_dir: /mnt/data/train/crb/code/dinov3
   saveckp_freq: 50

@@ -5,6 +5,7 @@
 
 import argparse
 import copy
+import time
 import gc
 import logging
 import math
@@ -14,38 +15,49 @@ from functools import partial
 from pathlib import Path
 
 import torch
+
 import torch.distributed
 from torch.distributed._tensor import DTensor
-
+from torch.distributed._shard.sharded_tensor import ShardedTensor
+from dinov3.new_train.data.svs_h5.new_h5_svs_dataset import WsiPatchDataset, make_data_loader_wsi
+from dinov3.new_train.data.svs_h5.svs_samplers import SamplerType_WSI
+from dinov3.new_train.data.h5_file.h5_dataset import H5Dataset, H5Dataset_NoCache
+from dinov3.new_train.data.patches_dataset import PaddedPatchDataset
+import torch.multiprocessing as mp
 import dinov3.distributed as distributed
 from dinov3.checkpointer import (
     find_latest_checkpoint,
     keep_checkpoint_copy,
     keep_last_n_checkpoints,
+    keep_last_n_eval,
     load_checkpoint,
     register_dont_save_hooks,
     save_checkpoint,
 )
-from dinov3.configs import setup_config, setup_job, setup_multidistillation
+from dinov3.new_train.data.multi_dataset import CombinedDataset, CombinedSampler, DatasetType
+from dinov3.configs import get_cfg_from_args, setup_config, setup_job, setup_multidistillation
 from dinov3.data import (
+    DataAugmentationDINO_Wsi,
     MaskingGenerator,
     SamplerType,
     collate_data_and_cast,
     make_data_loader,
     make_dataset,
+    _make_sampler,
     CombinedDataLoader,
 )
 from dinov3.logging import MetricLogger, setup_logging
 from dinov3.train.cosine_lr_scheduler import CosineScheduler, linear_warmup_cosine_decay
 from dinov3.train.multidist_meta_arch import MultiDistillationMetaArch
-from dinov3.train.ssl_meta_arch import SSLMetaArch
+from dinov3.new_train.train.ssl_meta_arch import SSLMetaArch
+from dinov3.utils.device import resolve_device_type, synchronize
 
 assert torch.__version__ >= (2, 1)
-torch.backends.cuda.matmul.allow_tf32 = True  # pytorch 1.12 sets this to false by default
-torch.backends.cudnn.benchmark = False  # True
+# torch.backends.cuda.matmul.allow_tf32 = True  # pytorch 1.12 sets this to false by default
+# torch.backends.cudnn.benchmark = False  # True
 
 logger = logging.getLogger("dinov3")
-
+_mode = "train"
 
 def get_args_parser(add_help: bool = True):
     parser = argparse.ArgumentParser("DINOv3 training", add_help=add_help)
@@ -92,12 +104,29 @@ For python-based LazyConfig, use "path.key=value".
     parser.add_argument("--ref_losses_path", default="", type=str)
     parser.add_argument("--multi-distillation", action="store_true", help="run multi-distillation")
 
+    # new
+    parser.add_argument("--checkpoint_dir", default="")
     return parser
 
 
 def build_optimizer(cfg, params_groups):
     return torch.optim.AdamW(params_groups, betas=(cfg.optim.adamw_beta1, cfg.optim.adamw_beta2))
 
+def get_augmention(cfg):
+    return DataAugmentationDINO_Wsi(
+        cfg.crops.global_crops_scale,
+        cfg.crops.local_crops_scale,
+        cfg.crops.local_crops_number,
+        global_crops_size=cfg.crops.global_crops_size,
+        local_crops_size=cfg.crops.local_crops_size,
+        gram_teacher_crops_size=cfg.crops.gram_teacher_crops_size,
+        gram_teacher_no_distortions=cfg.crops.gram_teacher_no_distortions,
+        local_crops_subset_of_global_crops=cfg.crops.localcrops_subset_of_globalcrops,
+        share_color_jitter=cfg.crops.share_color_jitter,
+        horizontal_flips=cfg.crops.horizontal_flips,
+        mean=cfg.crops.rgb_mean,
+        std=cfg.crops.rgb_std,
+    )
 
 def build_schedulers(cfg):
     if "schedules" in cfg:
@@ -223,7 +252,6 @@ def build_schedulers_v2(cfg):
     )
     return lr, weight_decay, momentum, teacher_temp, last_layer_lr
 
-
 def apply_optim_scheduler(optimizer, lr, wd, last_layer_lr):
     for param_group in optimizer.param_groups:
         is_last_layer = param_group["is_last_layer"]
@@ -264,13 +292,48 @@ def do_test(cfg, model, iteration, process_group, do_low_freq=False):
         torch.save({"teacher": new_state_dict}, ckpt_path)
         logger.info("Saved eval checkpoint: %s", ckpt_path)
 
-
-def build_data_loader_from_cfg(
+def build_dataset_from_cfg_wsi(
     cfg,
-    model,
-    start_iter,
+    dataset_type=DatasetType.SVS_DATE, # 0 svs 1: h5
 ):
     # Collate function
+    if dataset_type == DatasetType.SVS_DATE:
+        dataset = WsiPatchDataset(
+            tensor_transform=get_augmention(cfg),
+            patch_npy='/mnt/local09/train/crb/data/svs_data_v1/index.npy',
+            path_txt='/mnt/local09/train/crb/data/svs_data_v1/path.txt',
+            fix_size=224,
+            return_dic=False
+        )
+    elif dataset_type==DatasetType.H5_DATE:
+        dataset = H5Dataset_NoCache(
+            # index_path ='/mnt/local09/train/crb/data/h5_data_v1/h5_patch_index.npy',          # npy 索引 (structured npy: h5_id, patch_id)
+            # files_txt ='/mnt/local09/train/crb/data/h5_data_v1/h5_patch_index_files.txt',          # 保存 h5 文件路径
+            index_path='/mnt/local09/train/crb/data/h5_data_local10/h5_patch_index.npy',
+            files_txt='/mnt/local09/train/crb/data/h5_data_local10/h5_patch_index_files.txt',
+            dataset_key = "patches", 
+            transform=get_augmention(cfg), 
+            max_open = 32,
+            subdata_advance = None,
+        )
+    elif dataset_type==DatasetType.IMGNET_DATE:
+        dataset_path = 'ImageNet:split=TRAIN:root=/mnt/local09/train/crb/env_init/data/dataset_imagenet/tiny-imagenet:extra=/mnt/local09/train/crb/env_init/data/dataset_imagenet/tiny-imagenet_extra'
+        dataset = make_dataset(
+            dataset_str=dataset_path,
+            transform=get_augmention(cfg),
+            target_transform=None,
+        )
+    elif dataset_type==DatasetType.PATCHES_DATA:
+        dataset = PaddedPatchDataset(
+            index_npy="/mnt/local09/train/crb/data/img_data_v1130/patch_index.npy",
+            image_list_txt="/mnt/local09/train/crb/data/img_data_v1130/patch_index.txt",
+            patch_size=224,
+            pad_value=0,
+            transform=get_augmention(cfg),
+        )
+    return dataset
+
+def get_collate(cfg):
     img_size = cfg.crops.global_crops_size
     patch_size = cfg.student.patch_size
     n_tokens = (img_size // patch_size) ** 2
@@ -278,17 +341,7 @@ def build_data_loader_from_cfg(
         input_size=(img_size // patch_size, img_size // patch_size),
         max_num_patches=0.5 * img_size // patch_size * img_size // patch_size,
     )
-
-    if cfg.multidistillation.enabled:
-        assert cfg.multidistillation.global_batch_size % distributed.get_subgroup_size() == 0
-        local_batch_size = cfg.multidistillation.global_batch_size // distributed.get_subgroup_size()
-        dataloader_batch_size_per_gpu = (
-            cfg.multidistillation.global_batch_size + (distributed.get_world_size() - 1)
-        ) // distributed.get_world_size()
-    else:
-        local_batch_size = None  # will default to the standard local batch size matching the data batch size
-        dataloader_batch_size_per_gpu = cfg.train.batch_size_per_gpu
-
+    local_batch_size = None  # will default to the standard local batch size matching the data batch size
     collate_fn = partial(
         collate_data_and_cast,
         mask_ratio_tuple=cfg.ibot.mask_ratio_min_max,
@@ -303,84 +356,74 @@ def build_data_loader_from_cfg(
         random_circular_shift=cfg.ibot.mask_random_circular_shift,
         local_batch_size=local_batch_size,
     )
-    batch_size = dataloader_batch_size_per_gpu
-    num_workers = cfg.train.num_workers
-    dataset_path = cfg.train.dataset_path
-    dataset = make_dataset(
-        dataset_str=dataset_path,
-        transform=model.build_data_augmentation_dino(cfg),
-        target_transform=lambda _: (),
-    )
-
-    if isinstance(dataset, torch.utils.data.IterableDataset):
-        sampler_type = SamplerType.INFINITE
-    else:
-        sampler_type = SamplerType.SHARDED_INFINITE if cfg.train.cache_dataset else SamplerType.INFINITE
-
-    data_loader = make_data_loader(
-        dataset=dataset,
-        batch_size=batch_size,
-        num_workers=num_workers,
-        shuffle=True,
-        seed=cfg.train.seed + start_iter + 1,
-        sampler_type=sampler_type,
-        sampler_advance=start_iter * dataloader_batch_size_per_gpu,
-        drop_last=True,
-        collate_fn=collate_fn,
-    )
-    return data_loader
-
-
-def build_multi_resolution_data_loader_from_cfg(
-    cfg,
-    model,
-    start_iter,
-    seed=65537,
-):
-    global_crops_sizes = (
-        [cfg.crops.global_crops_size] if isinstance(cfg.crops.global_crops_size, int) else cfg.crops.global_crops_size
-    )
-    local_crops_sizes = (
-        [cfg.crops.local_crops_size] if isinstance(cfg.crops.local_crops_size, int) else cfg.crops.local_crops_size
-    )
-    gram_teacher_crops_sizes = (
-        [cfg.crops.gram_teacher_crops_size]
-        if cfg.crops.gram_teacher_crops_size is None or isinstance(cfg.crops.gram_teacher_crops_size, int)
-        else cfg.crops.gram_teacher_crops_size
-    )
-    loader_ratios = (
-        [cfg.crops.global_local_crop_pairs_ratios]
-        if type(cfg.crops.global_local_crop_pairs_ratios) in [int, float]
-        else cfg.crops.global_local_crop_pairs_ratios
-    )
-    assert len(global_crops_sizes) == len(local_crops_sizes) == len(gram_teacher_crops_sizes) == len(loader_ratios)
-
-    loaders = []
-    for increment, (global_crops_size_i, local_crops_size_i, gram_teacher_crops_size_i) in enumerate(
-        zip(global_crops_sizes, local_crops_sizes, gram_teacher_crops_sizes)
-    ):
-        cfg_i = copy.deepcopy(cfg)
-        cfg_i.crops.global_crops_size = global_crops_size_i
-        cfg_i.crops.local_crops_size = local_crops_size_i
-        cfg_i.crops.gram_teacher_crops_size = gram_teacher_crops_size_i
-        cfg_i.train.seed = cfg.train.seed + increment + 1
-        loaders.append(build_data_loader_from_cfg(cfg=cfg_i, model=model, start_iter=start_iter))
-
-    if len(loaders) == 1:
-        data_loader = loaders[0]
-    else:
-        data_loader = CombinedDataLoader(
-            loaders_with_ratios=zip(loaders, loader_ratios),
-            batch_size=cfg.train.batch_size_per_gpu,
-            combining_mode=0,
-            seed=seed,
-            name="MultiResDL",
+    return collate_fn
+def build_CombinedDataset_loader(cfg, start_iter=0):
+    
+    dataset_svs = build_dataset_from_cfg_wsi(cfg, DatasetType.SVS_DATE)
+    dataset_h5 = build_dataset_from_cfg_wsi(cfg, DatasetType.H5_DATE)
+    dataset_img = build_dataset_from_cfg_wsi(cfg, DatasetType.IMGNET_DATE)
+    dataset_patches = build_dataset_from_cfg_wsi(cfg, DatasetType.PATCHES_DATA)
+    logger.info(f"Using {_mode} mode")
+    if _mode == "debug":
+        datasets = [dataset_patches]
+        ratios=[1]
+    elif _mode == "train":
+        datasets = [dataset_svs, dataset_h5, dataset_patches, dataset_img]
+        ratios=[0.15, 0.75, 0.07, 0.03]
+    samplers = []
+    
+    
+    info_str = ", ".join(
+            f"{ds.__class__.__name__}(len={len(ds)}, ratio={r})"
+            for ds, r in zip(datasets, ratios)
         )
-    return data_loader
+    logger.info(f"Use datasets: {info_str}")
+    for ds, ratio in zip(datasets, ratios):
+        sampler_type = SamplerType.SHARDED_INFINITE_NEW
+        sampler = _make_sampler(
+            dataset=ds,
+            type=sampler_type,
+            shuffle=True,
+            seed=87,
+            advance=int(start_iter*cfg.train.batch_size_per_gpu*ratio),
+        )
+        samplers.append(sampler)
+    dataset_combined = CombinedDataset(dataset_list=datasets)
+    sampler_combined = CombinedSampler(
+        dataset_samplers = samplers,
+        ratios=ratios
+    )
+    collate_fn = get_collate(cfg)
+    if _mode == "debug":
+        loader_combined = torch.utils.data.DataLoader(
+            dataset_combined,
+            sampler=sampler_combined,
+            batch_size=cfg.train.batch_size_per_gpu,
+            drop_last=True,
+            collate_fn=collate_fn,
+            timeout=0,
+        )
+    elif _mode == "train":
+        loader_combined = torch.utils.data.DataLoader(
+            dataset_combined,
+            sampler=sampler_combined,
+            batch_size=cfg.train.batch_size_per_gpu,
+            num_workers=cfg.train.num_workers,
+            pin_memory=True,
+            drop_last=True,
+            persistent_workers=True,
+            collate_fn=collate_fn,
+            timeout=0,
+            multiprocessing_context="spawn",
+        )
+    return loader_combined
+
+
 
 
 def do_train(cfg, model, resume=False):
     process_subgroup = distributed.get_process_subgroup()
+    device_type = getattr(model, "device_type", None)
     ckpt_dir = Path(cfg.train.output_dir, "ckpt").expanduser()
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
@@ -401,13 +444,13 @@ def do_train(cfg, model, resume=False):
         )
     model.init_weights()
     start_iter = 0
-    if resume and (last_checkpoint_dir := find_latest_checkpoint(ckpt_dir)):
-        logger.info(f"Checkpoint found {last_checkpoint_dir}")
+    if resume:
+        logger.info(f"Checkpoint found {cfg.checkpoint_dir}")
         start_iter = (
             load_checkpoint(
-                last_checkpoint_dir,
+                cfg.checkpoint_dir,
                 model=model,
-                optimizer=optimizer,
+                optimizer=optimizer if _mode=="train" else None,
                 strict_loading=False,
                 process_group=process_subgroup,
             )
@@ -421,16 +464,15 @@ def do_train(cfg, model, resume=False):
         global_batch_size = cfg.train.batch_size_per_gpu * distributed.get_world_size()
 
     # Build data loader
-    data_loader = build_multi_resolution_data_loader_from_cfg(
-        cfg=cfg,
-        model=model,
-        start_iter=start_iter,
+    data_loader = build_CombinedDataset_loader(
+        cfg,
+        start_iter=start_iter
     )
 
     # Metric logging
     logger.info("Starting training from iteration %d", start_iter)
     metrics_file = os.path.join(cfg.train.output_dir, "training_metrics.json")
-    metric_logger = MetricLogger(delimiter="  ", output_file=metrics_file)
+    metric_logger = MetricLogger(delimiter="  ", output_file=metrics_file, device_type=device_type)
     # Manual garbage collection
     gc.disable()
     gc.collect()
@@ -451,14 +493,21 @@ def do_train(cfg, model, resume=False):
         num_gram_updates = math.ceil((start_iter + 1 - cfg.gram.it_first_update) / cfg.gram.update_frequency)
         logger.info(f"Gram was updated {num_gram_updates} times before iteration {start_iter}")
     consecutive_nan_count = 0
+    start_train_time = time.time()
+    end_train_time = time.time()
+    all_iteration_time = -1
+    logger_freq = 1 if _mode == 'debug' else 20
     for data in metric_logger.log_every(
         data_loader,
-        print_freq=10,
+        print_freq=logger_freq,
         header="Training",
         n_iterations=max_iter,
         start_iteration=start_iter,
     ):
         it = iteration
+        all_iteration_time = time.time() - start_train_time
+        start_train_time = time.time()
+        
         data["global_batch_size"] = global_batch_size
         if iteration > max_iter:
             return
@@ -482,9 +531,11 @@ def do_train(cfg, model, resume=False):
 
         # Forward backward
         optimizer.zero_grad(set_to_none=True)
-        total_loss, metrics_dict = model.forward_backward(data, teacher_temp=teacher_temp, iteration=it)
+        total_loss, metrics_dict = model.forward_backward(data, teacher_temp=teacher_temp, iteration=it, logger_freq=logger_freq)
+        forward_backward_time = time.time() - start_train_time
 
         # Gradient clipping
+        clip_start_time = time.time()
         if cfg.optim.clip_grad:
             for k, v in student.items():
                 grad_norm = torch.nn.utils.clip_grad_norm_(
@@ -496,8 +547,9 @@ def do_train(cfg, model, resume=False):
                     if isinstance(grad_norm, torch.distributed.tensor.DTensor)
                     else grad_norm.item()
                 )
-
+        clip_grad_time = time.time() - clip_start_time
         # Reduce total_loss to check for NaNs, reduce metrics for logging
+        reduce_start_time = time.time()
         total_loss_all_ranks = total_loss.new_empty(distributed.get_subgroup_size())
         torch.distributed.all_gather_into_tensor(
             total_loss_all_ranks,
@@ -513,6 +565,7 @@ def do_train(cfg, model, resume=False):
             op=torch.distributed.ReduceOp.AVG,
             group=distributed.get_process_subgroup(),
         )
+        reduce_time = time.time() - reduce_start_time
         metrics_dict = dict(zip(metrics_dict.keys(), metrics_values))
         if total_loss_all_ranks.isnan().any():
             consecutive_nan_count += 1
@@ -527,10 +580,11 @@ def do_train(cfg, model, resume=False):
                 raise RuntimeError(msg)
         else:
             consecutive_nan_count = 0
+        step_start_time = time.time()
         # Step optimizer
         optimizer.step()
         model.update_ema(mom)
-
+        step_time = time.time() - step_start_time
         # [GRAM] Update gram teacher when using gram teacher and frequent updates
         if (
             cfg.gram.use_loss
@@ -549,18 +603,29 @@ def do_train(cfg, model, resume=False):
         metric_logger.update(mom=mom)
         metric_logger.update(last_layer_lr=last_layer_lr)
         metric_logger.update(total_loss=total_loss, **metrics_dict)
+        all_time_dic = {
+            'all_iteration_time': all_iteration_time,
+            'step_time': step_time,
+            'forward_backward_time': forward_backward_time,
+            'clip_grad_time': clip_grad_time,
+            'reduce_time': reduce_time,
+            'data_time': start_train_time - end_train_time
+        }
+        metric_logger.update(**all_time_dic)
 
+            
         # Submit evaluation jobs
         if (
             cfg.evaluation.eval_period_iterations > 0 and (iteration + 1) % cfg.evaluation.eval_period_iterations == 0
             # and iteration != max_iter - 1
         ) and False:
             do_test(cfg, model, f"training_{iteration}", process_group=process_subgroup)
-            torch.cuda.synchronize()
+            synchronize(device_type)
 
         # Checkpointing
         if (iteration + 1) % cfg.checkpointing.period == 0:
-            torch.cuda.synchronize()
+            do_test(cfg, model, f"training_{iteration}", process_group=process_subgroup)
+            synchronize(device_type)
             save_checkpoint(
                 ckpt_dir / str(iteration),
                 iteration=iteration,
@@ -571,10 +636,13 @@ def do_train(cfg, model, resume=False):
             )
             if distributed.is_subgroup_main_process():
                 keep_last_n_checkpoints(ckpt_dir, cfg.checkpointing.max_to_keep)
+                eval_dir = Path(cfg.train.output_dir) / "eval" 
+                keep_last_n_eval(eval_dir, cfg.checkpointing.max_to_keep)
                 if "keep_every" in cfg.checkpointing and (iteration + 1) % cfg.checkpointing.keep_every == 0:
                     keep_checkpoint_copy(ckpt_dir / str(iteration))
-
+                
         iteration = iteration + 1
+        end_train_time = time.time()
     metric_logger.synchronize_between_processes()
 
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
@@ -586,20 +654,24 @@ def main(argv=None):
     else:
         args = get_args_parser().parse_args(argv[1:])
         args.output_dir = sys.argv[1]
-    if args.output_dir is None:
-        try:
-            from dinov3.new_train.utils.log_create import creat_subdir
-            args.output_dir = creat_subdir(base_dir='/mnt/data/train/crb/train_out/train_img', create=True, time=True)
-        except:
-            raise ImportError
+    base_dir = args.output_dir if args.output_dir is not None else '/mnt/data/train/crb/train_out/train_svs_debug'
+    try:
+        from dinov3.new_train.utils.log_create import creat_subdir
+        args.output_dir = creat_subdir(base_dir=base_dir, create=True, time=True)
+    except:
+        raise ImportError
+    device_type = None
     if args.multi_distillation:
         print("performing multidistillation run")
         cfg = setup_multidistillation(args)
         torch.distributed.barrier()
         logger.info("setup_multidistillation done")
         assert cfg.MODEL.META_ARCHITECTURE == "MultiDistillationMetaArch"
+        device_type = distributed.get_device_type() or resolve_device_type(cfg)
     else:
-        setup_job(output_dir=args.output_dir, seed=args.seed)
+        device_cfg = get_cfg_from_args(args, strict=False)
+        device_type = resolve_device_type(device_cfg)
+        setup_job(output_dir=args.output_dir, seed=args.seed, device_type=device_type)
         cfg = setup_config(args, strict_cfg=False)
         logger.info(cfg)
         setup_logging(
@@ -622,7 +694,7 @@ def main(argv=None):
         lambda t: torch.full_like(
             t,
             fill_value=math.nan if t.dtype.is_floating_point else (2 ** (t.dtype.itemsize * 8 - 1)),
-            device="cuda",
+            device=device_type,
         ),
         recurse=True,
     )
@@ -636,8 +708,19 @@ def main(argv=None):
             + 1
         )
         return do_test(cfg, model, f"manual_{iteration}")
-    do_train(cfg, model, resume=not args.no_resume)
+    if os.path.isdir(args.checkpoint_dir):
+        resume = True
+        cfg.checkpoint_dir = args.checkpoint_dir
+        logger.info(f'load model from {args.checkpoint_dir}/{cfg.checkpoint_dir}')
+    else:
+        resume = False
 
+    do_train(cfg, model, resume=resume)
 
+_mode="train"
 if __name__ == "__main__":
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
+    _mode="debug"
+    if mp.get_start_method(allow_none=True) not in ("spawn", "forkserver"):
+        mp.set_start_method("spawn", force=True)
     main()

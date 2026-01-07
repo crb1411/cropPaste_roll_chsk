@@ -1,0 +1,2 @@
+/mnt/local09/train/crb/data/h5_data_unicom_nas/2024-000326#1#1.h5
+/mnt/local09/train/crb/data/h5_data_unicom_nas/2024-003111#14#1.h5

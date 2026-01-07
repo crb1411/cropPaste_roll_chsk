@@ -146,12 +146,21 @@ def load_checkpoint(
     Can you take a checkpoint saved on N ranks and load it on M ranks? Sure you can!
     Activation checkpointing and torch-compile can also be different between save and load, no problem.
     """
+    # import torch.distributed.checkpoint as dcp
+    # import torch.distributed.checkpoint.filesystem as dcpfs
+    # import torch.distributed.checkpoint.state_dict as dcpsd
     ckpt_dir = Path(ckpt_dir)
     to_load = {"iteration": None}
+    logger.info('begin to load')
+    from dinov3.new_train.utils import get_device
+    model = model.to_empty(device = get_device())
     to_load["model"] = dcpsd.get_model_state_dict(model)
+    logger.info('to load dic ok')
+
     if optimizer is not None:
         to_load["optimizer"] = dcpsd.get_optimizer_state_dict(model, optimizer)
     to_load.update(others)
+    logger.info('begin dcp load')
     dcp.load(
         to_load,
         storage_reader=dcpfs.FileSystemReader(ckpt_dir),
@@ -159,9 +168,14 @@ def load_checkpoint(
         process_group=process_group,
     )
     iteration = to_load["iteration"]
+    logger.info('set dcp model')
     dcpsd.set_model_state_dict(model, to_load["model"])
+    logger.info('dcp model ok')
     if optimizer is not None:
+        logger.info('set dcp opt')
         dcpsd.set_optimizer_state_dict(model, optimizer, to_load["optimizer"])
+        logger.info('dcp opt ok')
+
     logger.info(f"Loaded: {ckpt_dir}")
     return iteration
 
@@ -247,6 +261,19 @@ def keep_last_n_checkpoints(ckpt_dir: Path | str, n: int | None):
         except Exception:
             logger.exception(f"Failed to delete: {ckpt_dir}")
 
+def keep_last_n_eval(ckpt_dir: Path | str, n: int | None):
+    """In a directory with integer-named subdirs, keep only the n subdirs with the highest number."""
+    if n is None:
+        return
+    import os
+    evals = find_all_checkpoints(ckpt_dir)
+    for ev in evals[:-n]:
+        try:
+            shutil.rmtree(os.path.join(ckpt_dir, ev))
+            logger.info(f"Deleted eval: {ev}")
+        except Exception:
+            logger.exception(f"Failed to delete: {ev}")
+
 
 def keep_checkpoint_copy(src: Path | str):
     """Copy a file/directory next to itself with a _keep suffix. Files are hardlinked."""
@@ -279,12 +306,12 @@ def init_fsdp_model_from_checkpoint(
 
         if process_group is None:
             world_mesh = init_device_mesh(
-                "cuda",
+                "npu",
                 mesh_shape=(dist.get_world_size(),),
                 mesh_dim_names=("dp",),
             )
         else:
-            world_mesh = DeviceMesh.from_group(process_group, "cuda")
+            world_mesh = DeviceMesh.from_group(process_group, "npu")
         chkpt = {
             key: (
                 torch.distributed.tensor.distribute_tensor(tensor, world_mesh, src_data_rank=None)

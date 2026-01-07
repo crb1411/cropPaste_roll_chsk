@@ -8,8 +8,15 @@ from functools import partial
 from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple, Union
 
 import torch
+
 import torch.nn.init
 from torch import Tensor, nn
+
+try:
+    import sys
+    sys.path.append('/mnt/work/git_proj/dinov3')
+except ImportError:
+    pass
 
 from dinov3.layers import LayerScale, Mlp, PatchEmbed, RMSNorm, RopePositionEmbedding, SelfAttentionBlock, SwiGLUFFN
 from dinov3.utils import named_apply
@@ -414,3 +421,92 @@ def vit_7b(patch_size=16, **kwargs):
         **kwargs,
     )
     return model
+
+def _get_arch(name: str):
+    arch_map = {
+        "vit_small": vit_small,
+        "vit_base": vit_base,
+        "vit_large": vit_large,
+        "vit_so400m": vit_so400m,
+        "vit_huge2": vit_huge2,
+        "vit_giant2": vit_giant2,
+        "vit_7b": vit_7b,
+    }
+    if name not in arch_map:
+        raise ValueError(f"Unknown arch: {name}. Available: {', '.join(sorted(arch_map))}")
+    return arch_map[name]
+
+
+def _resolve_dtype_name(name: str) -> str:
+    name = str(name).strip().lower()
+    if name in dtype_dict:
+        return name
+    if name in ("float32", "fp32", "float"):
+        return "fp32"
+    if name in ("float16", "fp16", "half"):
+        return "fp16"
+    if name in ("bfloat16", "bf16"):
+        return "bf16"
+    raise ValueError(f"Unknown dtype: {name}")
+
+
+if __name__ == "__main__":
+    import argparse
+    from pathlib import Path
+
+    parser = argparse.ArgumentParser()
+    default_cfg = Path(__file__).resolve().parents[1] / "configs" / "train_test" / "base_test3_v1219.yaml"
+    parser.add_argument("--config-file", default=str(default_cfg))
+    parser.add_argument("--arch", default="vit_large")
+    parser.add_argument("--img-size", type=int, default=None)
+    parser.add_argument("--patch-size", type=int, default=None)
+    parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--device", default="auto", help="auto, cuda, npu, cpu")
+    parser.add_argument("--dtype", default=None, help="fp32, fp16, bf16, float32, float16, bfloat16")
+    parser.add_argument("--seed", type=int, default=0)
+    args = parser.parse_args()
+
+    cfg = None
+    cfg_path = Path(args.config_file) if args.config_file else None
+    if cfg_path and cfg_path.is_file():
+        from omegaconf import OmegaConf
+
+        cfg = OmegaConf.load(cfg_path)
+    device_type = 'cuda'
+    device = torch.device('cuda')
+
+    torch.manual_seed(args.seed)
+
+    dtype_name = args.dtype
+    if dtype_name is None and cfg is not None:
+        dtype_name = str(getattr(cfg.MODEL, "DTYPE", "fp32"))
+    if dtype_name is None:
+        dtype_name = "fp32"
+    dtype = dtype_dict[_resolve_dtype_name(dtype_name)]
+    if device_type == "cpu" and dtype is not torch.float32:
+        logger.warning("CPU does not reliably support %s, falling back to fp32.", dtype_name)
+        dtype = torch.float32
+
+    if cfg is not None:
+        from dinov3.models import build_model_from_cfg
+
+        global_size = getattr(cfg.crops, "global_crops_size", args.img_size or 224)
+        img_size = int(global_size if isinstance(global_size, int) else max(global_size))
+        model, _ = build_model_from_cfg(cfg, only_teacher=True)
+    else:
+        img_size = args.img_size or 224
+        patch_size = args.patch_size or 16
+        model_fn = _get_arch(args.arch)
+        model = model_fn(patch_size=patch_size, img_size=img_size)
+    if any(param.device.type == "meta" for param in model.parameters()):
+        model.to_empty(device=device)
+    else:
+        model.to(device=device)
+    model.to(dtype=dtype)
+    model.init_weights()
+    model.eval()
+
+    x = torch.randn(args.batch_size, 3, img_size, img_size, device=device, dtype=dtype)
+    with torch.no_grad():
+        y = model(x)
+    print(f"device={device_type}, dtype={dtype}, output_shape={tuple(y.shape)}")

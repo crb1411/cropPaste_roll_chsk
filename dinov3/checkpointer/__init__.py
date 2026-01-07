@@ -12,6 +12,7 @@ from .checkpointer import (
     init_model_from_checkpoint_for_evals,
     keep_checkpoint_copy,
     keep_last_n_checkpoints,
+    keep_last_n_eval,
     load_checkpoint,
     register_dont_save_hooks,
     save_checkpoint,

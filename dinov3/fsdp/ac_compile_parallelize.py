@@ -8,6 +8,7 @@ from functools import partial
 from typing import Any, List, Optional
 
 import torch
+
 import torch.distributed as dist
 import torch.nn as nn
 from torch.distributed._composable.fsdp import MixedPrecisionPolicy, fully_shard
@@ -17,6 +18,7 @@ from torch.distributed.fsdp._fully_shard._fsdp_state import FSDPState
 from torch.utils.checkpoint import create_selective_checkpoint_contexts
 
 from dinov3.utils import utils
+from dinov3.new_train.utils import get_device
 
 logger = logging.getLogger("dinov3")
 
@@ -91,19 +93,32 @@ def ac_compile_parallelize(
     else:
         all_pgs = [trained_model_process_group] + inference_only_models_process_groups
 
+    device_type = get_device()
+
     def wrap_compile_block(m: nn.Module, is_backbone_block: bool) -> nn.Module:
         if cfg.train.compile:
             if is_backbone_block and cfg.train.cudagraphs:
                 m.compile(fullgraph=True, dynamic=False, options={"triton.cudagraphs": True})
-            else:
+            elif device_type == torch.device("cuda"):
                 m.compile()
+            elif device_type == torch.device("npu"):
+                try:
+                    import torch_npu
+                    import torchair
+                except ImportError as exc:
+                    raise RuntimeError("torchair is required for NPU compile.") from exc
+                config = torchair.CompilerConfig()
+                config.debug.fx_summary.type = "csv"
+                npu_backend = torchair.get_npu_backend(compiler_config=config)
+                # TODO debug 
+                # m = torch.compile(m, backend=npu_backend) 
         return m
 
     map_modules_and_blocks(all_models, wrap_compile_block)
 
     # 3/ Wrap submodules with FSDP
     world_mesh = init_device_mesh(
-        "cuda",
+        device_type.type,
         mesh_shape=(dist.get_world_size(),),
         mesh_dim_names=("dp",),
     )
@@ -120,17 +135,18 @@ def ac_compile_parallelize(
     for m, pg in zip(all_models, all_pgs):
         if pg is None:
             world_mesh = init_device_mesh(
-                "cuda",
+                device_type.type,
                 mesh_shape=(dist.get_world_size(),),
                 mesh_dim_names=("dp",),
             )
         else:
-            world_mesh = DeviceMesh.from_group(pg, "cuda")
+            world_mesh = DeviceMesh.from_group(pg, device_type.type)
         fsdp_config = {"mesh": world_mesh, "mp_policy": mp_policy}
         for k in m.keys():
             if k != "backbone":
                 m[k] = fully_shard(m[k], **fsdp_config, reshard_after_forward=True)
-                m[k].set_reduce_scatter_divide_factor(1)
+                if device_type ==  torch.device("cuda"):
+                    m[k].set_reduce_scatter_divide_factor(1)
                 continue
             # Backbone - FSDP every block
             blocks = m[k].blocks
@@ -138,21 +154,27 @@ def ac_compile_parallelize(
             assert isinstance(blocks, nn.ModuleList)
             for block_id, block in enumerate(blocks):
                 block_reshard: int | bool = True
-                # if m is trained_model and dist.get_world_size() % 8 == 0 and dist.get_world_size() > 8:
-                #     block_reshard = 8
-                blocks[block_id] = fully_shard(block, **fsdp_config, reshard_after_forward=block_reshard)
-                blocks[block_id].set_reduce_scatter_divide_factor(1)
+                if device_type ==  torch.device("cuda"):
+                    if m is trained_model and dist.get_world_size() % 8 == 0 and dist.get_world_size() > 8:
+                        block_reshard = 8
+                    blocks[block_id] = fully_shard(block, **fsdp_config, reshard_after_forward=block_reshard)
+                    blocks[block_id].set_reduce_scatter_divide_factor(1)
+                elif device_type ==  torch.device("npu"):
+                    blocks[block_id] = fully_shard(block, **fsdp_config, reshard_after_forward=block_reshard)
             prev_block: FSDPState
             next_block: FSDPState
             for prev_block, next_block in zip(blocks, blocks[1:]):
                 prev_block.set_modules_to_forward_prefetch([next_block])
                 next_block.set_modules_to_backward_prefetch([prev_block])
-            fully_shard(m.backbone, **fsdp_config, reshard_after_forward=True).set_reduce_scatter_divide_factor(1)
+            if device_type == torch.device('cuda'):
+                fully_shard(m.backbone, **fsdp_config, reshard_after_forward=True).set_reduce_scatter_divide_factor(1)
+            elif device_type == torch.device('npu'):
+                fully_shard(m.backbone, **fsdp_config, reshard_after_forward=True)
             register_fsdp_forward_method(m.backbone, "get_intermediate_layers")
 
-    # 4/ Move to `cuda` device
+    # 4/ Move to device
     for model in all_models:
-        model.to_empty(device="cuda")
+        model.to_empty(device=device_type)
 
     # 5/ FSDP2: Reshard immediately after forward for inference-only models
     for model in inference_only_models:

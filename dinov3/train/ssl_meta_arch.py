@@ -15,6 +15,7 @@ import dinov3.distributed as distributed
 from dinov3.checkpointer import init_fsdp_model_from_checkpoint
 from dinov3.configs import get_default_config
 from dinov3.data import DataAugmentationDINO
+from dinov3.data.legacy_augment import AugmentSwitch
 from dinov3.fsdp.ac_compile_parallelize import ac_compile_parallelize
 from dinov3.layers.dino_head import DINOHead
 from dinov3.loss import DINOLoss, GramLoss, KoLeoLoss, KoLeoLossDistributed, iBOTPatchLoss
@@ -39,12 +40,9 @@ class SSLMetaArch(nn.Module):
         assert cfg.crops.local_crops_number > 0
         assert cfg.ibot.separate_head is True
         assert cfg.train.centering == "sinkhorn_knopp"
-
         # For some reason FULL_SHARD doesn't work
         assert cfg.compute_precision.sharding_strategy == "SHARD_GRAD_OP"
-
-        self.cfg = cfg
-
+        self.cfg = cfg  
         student_model_dict = dict()
         teacher_model_dict = dict()
         gram_model_dict = dict()
@@ -360,6 +358,14 @@ class SSLMetaArch(nn.Module):
         assert data["collated_global_crops"].shape[0] == n_global_crops * B
         metrics_dict["local_batch_size"] = B
         metrics_dict["global_batch_size"] = data["global_batch_size"]
+        # cache batch metadata for subclasses that need shapes/lengths
+        self._batch_meta = {
+            "B": B,
+            "n_global_crops": n_global_crops,
+            "n_local_crops": n_local_crops,
+            "global_shape": tuple(data["collated_global_crops"].shape),
+            "local_shape": tuple(data["collated_local_crops"].shape),
+        }
 
         global_crops = data["collated_global_crops"].cuda(non_blocking=True)
         local_crops = data["collated_local_crops"].cuda(non_blocking=True)
@@ -740,6 +746,8 @@ class SSLMetaArch(nn.Module):
             torch._foreach_add_(gramteacher_param_list, teacher_param_list, alpha=1 - m)
 
     def build_data_augmentation_dino(self, cfg):
+        use_legacy = True
+        legacy_switch = _resolve_legacy_augment_switch(cfg)
         return DataAugmentationDINO(
             cfg.crops.global_crops_scale,
             cfg.crops.local_crops_scale,
@@ -753,6 +761,8 @@ class SSLMetaArch(nn.Module):
             horizontal_flips=cfg.crops.horizontal_flips,
             mean=cfg.crops.rgb_mean,
             std=cfg.crops.rgb_std,
+            use_legacy_augmentor=use_legacy,
+            legacy_augmentor_switch=legacy_switch,
         )
 
     def get_maybe_fused_params_for_submodel(self, m: nn.Module):
@@ -813,3 +823,11 @@ class SSLMetaArch(nn.Module):
             catted = catted.narrow(dim=over_dim, start=0, length=global_batch_size)
 
         return catted.chunk(subgroup_size, dim=over_dim)[distributed.get_subgroup_rank()].clone()
+def _resolve_legacy_augment_switch(cfg):
+    switch_cfg = OmegaConf.select(cfg, "crops.legacy_augmentor_switch")
+    if switch_cfg is None:
+        return None
+    container = OmegaConf.to_container(switch_cfg, resolve=True)
+    if not isinstance(container, dict):
+        return None
+    return AugmentSwitch(**container)

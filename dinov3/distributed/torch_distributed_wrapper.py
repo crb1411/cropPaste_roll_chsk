@@ -15,6 +15,8 @@ from typing import List, Sequence
 import torch
 import torch.distributed as dist
 
+from dinov3.new_train.utils import get_device, set_device_index
+
 logger = logging.getLogger("dinov3")
 
 _DEFAULT_PROCESS_GROUP = None
@@ -259,9 +261,14 @@ def enable_distributed(
     )
 
     if set_cuda_current_device:
-        torch.cuda.set_device(torch_env.local_rank)
-
-    dist.init_process_group(backend="nccl", timeout=timeout)
+        # torch.cuda.set_device(torch_env.local_rank)
+        set_device_index(torch_env.local_rank)
+        
+    device_type = get_device()
+    if device_type == torch.device('cuda'):
+        dist.init_process_group(backend="nccl", timeout=timeout)
+    elif device_type == torch.device('npu'):
+        dist.init_process_group(backend="hccl", timeout=timeout)
     dist.barrier()
 
     if restrict_print_to_main_process:

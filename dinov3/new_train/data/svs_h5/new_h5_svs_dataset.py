@@ -17,8 +17,10 @@ import numpy as np
 from PIL import Image
 from tqdm import tqdm
 import torch
+
+ 
 from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms
+from torchvision.transforms import v2
 
 
 from ...utils.log_create import creat_subdir
@@ -29,13 +31,11 @@ from .slide_lru import SlideLRU
 logger = logging.getLogger("dinov3")
 
 # import sys
-# sys.path.append('/mnt/dcs_ai/crb/code/opensdpc')
+# sys.path.append('/mnt/crb/code/opensdpc')
 # import opensdpc as openslide
 import openslide
 # 建议：提升重复邻近读时的命中
-os.environ.setdefault("OPENSLIDE_CACHE_SIZE", "256M")
-# 防止 worker 内再起多线程
-os.environ.setdefault("OMP_NUM_THREADS", "1")
+
 
 DTYPE = np.dtype([
     ("h5_id", np.int32),
@@ -61,7 +61,7 @@ class PathAccessor:
 
 
 # =========================
-# 工具：读取 path.txt（与你截图一致）
+# 工具：读取 path.txt
 # =========================
 def load_paths_txt(path_txt: str) -> List[Optional[str]]:
     """
@@ -71,7 +71,7 @@ def load_paths_txt(path_txt: str) -> List[Optional[str]]:
     paths: List[Optional[str]] = []
     with open(path_txt, "r", encoding="utf-8") as f:
         paths_raw = [os.path.basename(ln.rstrip("\n")).replace('.h5', '.svs') for ln in f]
-        paths = PathAccessor(paths_raw, suffix='/mnt/data/svs_data')
+        paths = PathAccessor(paths_raw, suffix='/mnt/local09/svs_data')
     return paths
 
 
@@ -97,98 +97,7 @@ def _get_worker_id() -> int:
     except Exception:
         return -1
 
-# =========================
-# 每个 worker 的 LRU 句柄缓存
-# =========================
-class SVS_LRUCache:
-    def __init__(self, max_open: int = 8, open_fn=openslide.OpenSlide,
-                 log: bool = False, log_path: Optional[str] = None,
-                 name: str = "SVS_LRU", sample_rate: float = 1.0):
-        import random
-        self.cache: "OrderedDict[str, Any]" = OrderedDict()
-        self.max_open = max_open
-        self.open_fn = open_fn          # 默认用 openslide.OpenSlide
-        self.log = log
-        self.log_path = log_path
-        self.name = name
-        self.sample_rate = float(sample_rate)
-        self._rnd = random.Random(1234)
-        self._fp = None
-        self._opened_at: Dict[str, float] = {}
-        self._last_seen: Dict[str, float] = {}
-        self.stats = {"hit": 0, "open": 0, "evict": 0, "close_err": 0}
 
-    @staticmethod
-    def _wall_ts() -> str:
-        return datetime.now().astimezone().isoformat(timespec="milliseconds")
-
-    def _log(self, kind: str, path: Optional[str], extra: str = ""):
-        if not self.log:
-            return
-        if self.sample_rate < 1.0 and self._rnd.random() > self.sample_rate:
-            return
-        wid = _get_worker_id()
-        pid = os.getpid()
-        base = os.path.basename(path) if path else "-"
-        line = f"[{self._wall_ts()}] [{self.name}] wid={wid} pid={pid} {kind}: {base} {extra}\n"
-        if self.log_path:
-            if self._fp is None:
-                os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
-                self._fp = open(self.log_path, "a", buffering=1, encoding="utf-8")
-            self._fp.write(line)
-        else:
-            logger.info(line, end="", flush=True)
-
-    def has(self, path: str) -> bool:
-        return path in self.cache
-
-    def get(self, path: str):
-        # import openslide
-        now = time.perf_counter()
-
-        if path in self.cache:
-            self.cache.move_to_end(path)
-            self.stats["hit"] += 1
-            last = self._last_seen.get(path, self._opened_at.get(path, now))
-            self._last_seen[path] = now
-            # self._log("HIT", path, extra=f"(age={(now-self._opened_at.get(path,now))*1e3:.1f}ms, "
-            #                               f"since_last={(now-last)*1e3:.1f}ms, size={len(self.cache)})")
-            return self.cache[path]
-
-        if len(self.cache) >= self.max_open:
-            old_path, old_file = self.cache.popitem(last=False)
-            self.stats["evict"] += 1
-            # self._log("EVICT", old_path, extra=f"(age={(now-self._opened_at.get(old_path,now))*1e3:.1f}ms)")
-            try:
-                old_file.close()
-            except Exception as e:
-                self.stats["close_err"] += 1
-                # self._log("CLOSE_ERR", old_path, extra=str(e))
-            self._opened_at.pop(old_path, None)
-            self._last_seen.pop(old_path, None)
-
-        t0 = time.perf_counter()
-        slide = self.open_fn(path) if self.open_fn else openslide.OpenSlide(path)
-        t1 = time.perf_counter()
-        self.stats["open"] += 1
-        self.cache[path] = slide
-        self._opened_at[path] = now
-        self._last_seen[path] = now
-        self._log("OPEN", path, extra=f"(open_cost={(t1-t0)*1e3:.1f}ms, size={len(self.cache)})")
-        return slide
-
-    def close_all(self):
-        for p, f in list(self.cache.items()):
-            try:
-                f.close()
-            except Exception as e:
-                self.stats["close_err"] += 1
-                self._log("CLOSE_ERR", p, extra=str(e))
-        self.cache.clear()
-        if self._fp:
-            try: self._fp.close()
-            except: pass
-            self._fp = None
 
 def get_rank():
     if torch.distributed.is_available() and torch.distributed.is_initialized():
@@ -210,63 +119,54 @@ class WsiPatchDataset(Dataset):
       }
     """
     def __init__(self,
-                 patch_npy: str = '/mnt/data/svs_train_data/h52npy/index.npy',
-                 path_txt: str='/mnt/data/svs_train_data/h52npy/path.txt',
+                 patch_npy: str = '/mnt/local09/train/crb/npu_adp/data_npu/svs_index/index.npy',
+                 path_txt: str='/mnt/local09/train/crb/npu_adp/data_npu/svs_index/path.txt',
                  pil_transform=None,
                  tensor_transform=None,
-                 lru_max_open: int = 8,
-                 log_lru: bool = False,
+                 lru_max_open: int = 32,
                  log_dir: Optional[str] = '/mnt/data/train/crb/train_out/train_test/log_dir',
                  advance: Optional[int] = None,
-                 show_augmented_img: bool = True,
                  show_max_num: int = 5,
                  fix_size=None,
-                 return_dic: bool=False
-                 ):
+                 return_dic: bool=False,
+                 shared_val=None,
+            ):
         super().__init__()
         # 关键：以 memmap 方式打开，不将索引载入内存
         self.patch_npy = patch_npy
-        self._data = open_patch_index_memmap(self.patch_npy)
-        self._paths: List[Optional[str]] = load_paths_txt(path_txt)
+        self.path_txt = path_txt
+        self._data = None
+        self._paths: List[Optional[str]] = None
 
         self.pil_transform = pil_transform
         self.tensor_transform = tensor_transform
         self._lru_max_open = lru_max_open
-        self._log_lru = log_lru
         self.log_dir = log_dir 
-        self._slide_cache: Optional[SVS_LRUCache] = None  # 每个 worker 自己初始化
+        self._slide_cache: Optional[SlideLRU] = None  # 每个 worker 自己初始化
         self.advance = advance
-        self.show_augmented_img = show_augmented_img
         self.rank = get_rank()
         self.return_dic = return_dic
-        if self.rank==-1:
-            self.augmented_img_out_dir = creat_subdir(
-                                    base_dir=self.log_dir,
-                                    prefix=f'augmented_img_dir',
-                                    )
-        else:
-            self.augmented_img_out_dir = os.path.join(
-                                    creat_subdir(
-                                        base_dir=self.log_dir,
-                                        prefix=f'augmented_img_dir',
-                                        ),
-                                    f'rank_{self.rank}'
-                                    )
         self.show_max_num = show_max_num
         self.showed_num = 0 
         self.fix_size = fix_size
+        self.shared_val = shared_val
+        print(f"dataset init success, rank: {self.rank}")
 
-        
+    def _ensure_data(self):
+        if self._data is None:
+            self._data = open_patch_index_memmap(self.patch_npy)
+            self._paths: List[Optional[str]] = load_paths_txt(self.path_txt)
 
     def __len__(self) -> int:
+        self._ensure_data()
         return int(self._data.shape[0]) if not self.advance else len(self._data) - self.advance
 
     def _ensure_cache(self):
         if self._slide_cache is None:
             wid = _get_worker_id()
-            # log_path = os.path.join(self._log_dir, f"svs_lru_w{wid}.log") if self._log_lru else None
             self._slide_cache = SlideLRU(
                 max_open=self._lru_max_open,
+                shared_val=self.shared_val,
                 open_fn=None,                    # 默认 openslide.OpenSlide
             )
 
@@ -284,6 +184,7 @@ class WsiPatchDataset(Dataset):
         return [self[i] for i in range(*sl.indices(len(self)))]
     
     def __getitem__(self, index: int) -> Optional[Dict[str, Any]]:
+        self._ensure_data()
         if isinstance(index, slice):
             return self._getslice(index)
         self._ensure_cache()
@@ -294,6 +195,7 @@ class WsiPatchDataset(Dataset):
 
         try:
             slide = self._slide_cache.get(svs_path)
+            # todo: process x,y (s,s) 越界
             if self.fix_size is None:
                 
                 img: Image.Image = slide.read_region((x, y), 0, (s, s)).convert("RGB")
@@ -304,33 +206,40 @@ class WsiPatchDataset(Dataset):
 
             if self.tensor_transform is not None:
                 img = self.tensor_transform(img)
-                if self.show_augmented_img:
-                    self.showed_num += 1
-                    if self.showed_num >= self.show_max_num:
-                        self.show_augmented_img = False
-                    index_dir = os.path.join(self.augmented_img_out_dir, f"index_{index}")
-                    os.makedirs(index_dir, exist_ok=True)
-                    save_index(
-                        img=img,
-                        out_dir=index_dir,
-                        prefix='augmentation'
-                    )
-                    if self.show_augmented_img is False:
-                        logger.info(f'index: {index} augmentations saved to {index_dir}')
             else:
                 img = wsi_transform(img)
             img_dic = {
                 "image": img,
                 "path": svs_path,
                 "sdpc_id": sid,
-                "x": x, "y": y, "level": 0, "patch_size": s,
+                "x": x, "y": y, "level": 0, "patch_size": s if self.fix_size is None else self.fix_size,
                 "index": index,
             }
             return  img_dic if self.return_dic else img, None
         except Exception:
             # 坏 patch 直接丢弃；collate 跳过 None
             return None
-
+        
+    def generate_augument_img(self):
+        augument_dir = creat_subdir(
+            base_dir=self.log_dir,
+            prefix='augument',
+            time=True
+        )
+        flag = self.return_dic
+        self.return_dic = True
+        for index in range(self.show_max_num):
+            img_dic= self[index]
+            img = img_dic["image"]
+            index_dir = os.path.join(augument_dir, f"index_{index}")
+            os.makedirs(index_dir, exist_ok=True)
+            save_index(
+                img=img,
+                out_dir=index_dir,
+                prefix='augmentation'
+            )
+        logger.info(f'index: 0-{self.show_max_num-1} augmentations saved to {augument_dir}')
+        self.return_dic = flag
 
 # =========================
 # Collate & Loader & Probe
@@ -372,11 +281,14 @@ def dict_collate_fn(batch):
     return collated
 
 
-wsi_transform = transforms.Compose([
-    transforms.Resize((224, 224)),              
-    transforms.ToTensor(),
-])
 
+wsi_transform = v2.Compose([    
+    v2.ToImage(),
+    v2.ToDtype(torch.float32, scale=True)
+])
+import torch.multiprocessing as mp
+if mp.get_start_method(allow_none=True) not in ("spawn", "forkserver"):
+    mp.set_start_method("spawn", force=True)
 
 def make_data_loader_wsi(
         dataset,
@@ -394,6 +306,7 @@ def make_data_loader_wsi(
         chunk_size: int = 30,
         collate_fn = None,
     ):
+    sampler_advance = int(sampler_advance)
     if sampler_type == SamplerType_WSI.GLOBAL_CHUNK:
         sampler = ShardedChunkedInfiniteSampler(
         seed=seed,
@@ -434,6 +347,7 @@ def make_data_loader_wsi(
         num_workers=num_workers,
         prefetch_factor=prefetch_factor if num_workers > 0 else None,
         persistent_workers=persistent_workers if num_workers > 0 else False,
+        multiprocessing_context="spawn",
         pin_memory=pin_memory,
         collate_fn=collate_fn,
         drop_last=drop_last,
@@ -469,9 +383,7 @@ def quick_probe(loader: DataLoader, steps: int = 200):
     print(f"[probe] {n/sec:.1f} patch/s  ({1000*sec/max(1,n):.3f} ms/patch) over {n} patches")
 
 
-# =========================
-# CLI（可直接压测）
-# =========================
+
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser("WSI Patch Dataset (memmap) probe")
@@ -485,7 +397,7 @@ if __name__ == "__main__":
         return_dic=False
     )
 
-    loader =make_data_loader_wsi(
+    loader = make_data_loader_wsi(
         dataset=ds
     )
     print_max_time, print_time = 5, 0

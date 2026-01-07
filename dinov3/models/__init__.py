@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Union
 
 import torch
+
 import torch.nn as nn
 
 from dinov3.layers.fp8_linear import convert_linears_to_fp8
