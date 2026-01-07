@@ -31,7 +31,8 @@ from .slide_lru import SlideLRU
 logger = logging.getLogger("dinov3")
 
 # import sys
-# sys.path.append('/mnt/crb/code/opensdpc')
+# from pathlib import Path
+# sys.path.append(str(Path(__file__).resolve().parents[4].parent / "opensdpc"))
 # import opensdpc as openslide
 import openslide
 # 建议：提升重复邻近读时的命中
@@ -410,5 +411,4 @@ if __name__ == "__main__":
         if print_time >= print_max_time:
             break
         pass
-
 

@@ -6,6 +6,7 @@ import logging
 import math
 import random
 import sys
+from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 import torch
@@ -13,7 +14,8 @@ import torch.nn.functional as F
 from omegaconf import OmegaConf
 from torch import Tensor, nn
 
-sys.path.append("/data/work/git_proj/dinov3")
+REPO_ROOT = Path(__file__).resolve().parents[3]
+sys.path.append(str(REPO_ROOT))
 
 from dinov3.data.masking import MaskingGenerator
 from dinov3.loss import DINOLoss, iBOTPatchLoss
@@ -1074,7 +1076,7 @@ def _smoke_test_png_dataset():
 
     # dataset is defined in resize_2/data/dataset.py
     import sys
-    sys.path.append('/data/work/git_proj/resize_2')
+    sys.path.append(str(REPO_ROOT.parent / "resize_2"))
     from data.dataset import (
         png_dataset
     )

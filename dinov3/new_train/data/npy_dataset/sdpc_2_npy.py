@@ -3,13 +3,14 @@ import os
 import csv
 import zlib
 import time
+from pathlib import Path
 import numpy as np
 import h5py
 import sys
-sys.path.append('/mnt/crb/code/opensdpc')
-import opensdpc_old as openslide
+# sys.path.append('/mnt/crb/code/opensdpc')
+# import opensdpc_old as openslide
 
-from pathlib import Path
+import openslide
 from tqdm import tqdm
 from multiprocessing import Pool, cpu_count
 from itertools import accumulate

@@ -22,7 +22,8 @@ import torch.distributed as dist
 from omegaconf import OmegaConf
 
 import sys
-sys.path.append(str(Path(__file__).parent.parent.parent))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.append(str(REPO_ROOT))
 
 from dinov3.configs import setup_config, setup_job
 from dinov3.logging import setup_logging
@@ -97,7 +98,7 @@ def build_dataloader(cfg):
     )
 
     # resize_2/data/dataset.py must be importable (ensure PYTHONPATH includes resize_2/)
-    sys.path.append('/data/work/git_proj/resize_2')
+    sys.path.append(str(REPO_ROOT.parent / "resize_2"))
     from data.dataset import png_dataset  # noqa: WPS433
 
     dataset = png_dataset(img_transforms=aug)

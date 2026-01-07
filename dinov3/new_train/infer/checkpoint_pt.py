@@ -16,7 +16,8 @@ from torch.distributed.fsdp import (
     FullStateDictConfig,
 )
 import sys
-sys.path.append('/mnt/local09/train/crb/npu_adp/dinov3')
+REPO_ROOT = Path(__file__).resolve().parents[3]
+sys.path.append(str(REPO_ROOT))
 
 Stateful = Any  # 你原来的别名
 logger = logging.getLogger('dinov3')

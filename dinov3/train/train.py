@@ -17,8 +17,8 @@ import torch
 import torch.distributed
 from torch.distributed._tensor import DTensor
 
-import sys 
-sys.path.append('/data/work/git_proj/dinov3')
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.append(str(REPO_ROOT))
 import dinov3.distributed as distributed
 from dinov3.checkpointer import (
     find_latest_checkpoint,

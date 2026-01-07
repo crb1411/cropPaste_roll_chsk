@@ -12,9 +12,10 @@ import torch
 from torch import nn
 from torchvision.transforms import v2
 
-import sys 
+import sys
 from PIL import Image
-sys.path.append('/mnt/work/git_proj/dinov3')
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.append(str(REPO_ROOT))
 from functools import partial
 
 from dinov3.data.transforms import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, GaussianBlur, make_normalize_transform
@@ -290,7 +291,7 @@ if __name__ == "__main__":
     img = torch.rand(3, 224, 224)
     from omegaconf import DictConfig, OmegaConf
     cfg = OmegaConf.load("/data/work/git_proj/dinov3/dinov3/configs/ssl_default_config.yaml")
-    sys.path.append('/data/work/git_proj/resize_2')
+    sys.path.append(str(REPO_ROOT.parent / "resize_2"))
     from dinov3.new_train.data.imgnet import ImageNetResizeDataset
     
     from dinov3.data import (

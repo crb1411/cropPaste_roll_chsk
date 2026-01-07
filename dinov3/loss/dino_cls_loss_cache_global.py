@@ -9,7 +9,8 @@ from torch import nn
 import time
 
 # import sys
-# sys.path.append('/data/work/git_proj/dinov3')
+# from pathlib import Path
+# sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from dinov3.distributed import get_process_subgroup, get_subgroup_size
 from dinov3.loss.blance_prototype import PrototypeBalancer

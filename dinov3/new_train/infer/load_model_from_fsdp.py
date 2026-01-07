@@ -3,6 +3,7 @@ import copy
 import gc
 import math
 import os
+from pathlib import Path
 
 
 import torch
@@ -10,7 +11,8 @@ import torch
 import torch.distributed
 from torch.distributed._tensor import DTensor
 import sys
-sys.path.append('/mnt/local09/train/crb/npu_adp/dinov3')
+REPO_ROOT = Path(__file__).resolve().parents[3]
+sys.path.append(str(REPO_ROOT))
 
 import dinov3.distributed as distributed
 from dinov3.checkpointer import (

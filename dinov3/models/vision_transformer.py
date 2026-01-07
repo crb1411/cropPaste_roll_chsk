@@ -5,6 +5,7 @@
 
 import logging
 from functools import partial
+from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple, Union
 
 import torch
@@ -14,7 +15,7 @@ from torch import Tensor, nn
 
 try:
     import sys
-    sys.path.append('/mnt/work/git_proj/dinov3')
+    sys.path.append(str(Path(__file__).resolve().parents[2]))
 except ImportError:
     pass
 

@@ -5,9 +5,11 @@ import torch
 
 
 from collections import OrderedDict
+from pathlib import Path
 
 import sys
-sys.path.append('/mnt/local09/train/crb/npu_adp/dinov3')
+REPO_ROOT = Path(__file__).resolve().parents[3]
+sys.path.append(str(REPO_ROOT))
 
 
     

@@ -15,8 +15,8 @@ import torch
 import torch.distributed
 from torch.distributed._tensor import DTensor
 from torch.distributed._shard.sharded_tensor import ShardedTensor
-import sys
-sys.path.append('/mnt/work/git_proj/dinov3')
+REPO_ROOT = Path(__file__).resolve().parents[3]
+sys.path.append(str(REPO_ROOT))
 
 from dinov3.new_train.data.svs_h5.new_h5_svs_dataset import WsiPatchDataset, make_data_loader_wsi
 from dinov3.new_train.data.svs_h5.svs_samplers import SamplerType_WSI

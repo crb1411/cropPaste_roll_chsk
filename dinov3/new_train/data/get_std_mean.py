@@ -3,9 +3,11 @@ import torch
 
 from functools import partial
 import logging
+from pathlib import Path
 
 import sys
-sys.path.append('/mnt/local09/train/crb/npu_adp/dinov3')
+REPO_ROOT = Path(__file__).resolve().parents[3]
+sys.path.append(str(REPO_ROOT))
 from dinov3.configs import setup_config, setup_job
 from dinov3.data import (
     DataAugmentationDINO_Wsi,
