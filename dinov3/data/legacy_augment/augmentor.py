@@ -28,8 +28,8 @@ class AugmentSwitch:
     use_white: bool = False
     use_black: bool = False
     use_gray: bool = False
-    crop_background_mode: str = "random"  # "fixed" or "random"
-    crop_background_value: float = 1.0
+    crop_background_mode: str = "fixed"  # "fixed" or "random"
+    crop_background_value: float = 1.0 # white
     crop_background_min: float = 0.0
     crop_background_max: float = 1.0
 

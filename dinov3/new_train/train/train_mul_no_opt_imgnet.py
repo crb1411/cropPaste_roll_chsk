@@ -463,18 +463,6 @@ def build_CombinedDataset_loader(cfg, start_iter=0):
         drop_last=True,
         timeout=0,
     )
-    # loader_combined = torch.utils.data.DataLoader(
-    #     dataset_combined,
-    #     sampler=sampler_combined,
-    #     batch_size=cfg.train.batch_size_per_gpu,
-    #     num_workers=cfg.train.num_workers,
-    #     pin_memory=True,
-    #     drop_last=True,
-    #     persistent_workers=True,
-    #     collate_fn=collate_fn,
-    #     timeout=0,
-    #     multiprocessing_context="spawn",
-    # )
     return loader_combined
 
 
