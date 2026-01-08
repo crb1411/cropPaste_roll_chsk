@@ -207,9 +207,11 @@ schedules:
     warmup_epochs: 0
 legacy_augmentor:
     crop_resize_loss_weight: 1.0       # legacy CropPaste CE on head logits
-    crop_resize_temp: 0.06
-    patch_shuffle_loss_weight: 0.1     # iBOT-style CE with shift perm_idx
-    patch_shuffle_temp: 0.1
+    crop_resize_temp: 0.055
+    patch_shuffle_loss_weight: 1.0     # iBOT-style CE with shift perm_idx
+    patch_shuffle_patch_weight: 0.3    # weight for roll patch loss
+    patch_shuffle_cls_weight: 1.0      # weight for roll cls loss
+    patch_shuffle_temp: 0.055
     patch_shuffle_patch_probability: 0.3  # fraction of samples used for roll patch loss
     patch_shuffle_patch_min_max:
     - 0.1

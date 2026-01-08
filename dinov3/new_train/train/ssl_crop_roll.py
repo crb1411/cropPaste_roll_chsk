@@ -18,7 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.append(str(REPO_ROOT))
 
 from dinov3.data.masking import MaskingGenerator
-from dinov3.loss import DINOLoss, iBOTPatchLoss
+from dinov3.loss import DINOLoss, DINOLoss_skcache, iBOTPatchLoss
 from dinov3.new_train.train.ssl_meta_arch import SSLMetaArch
 logger = logging.getLogger("dinov3")
 
@@ -139,6 +139,12 @@ class SSLAugmentedCropRoll(SSLMetaArch):
         self.patchshuffle_weight = float(
             _sel("legacy_augmentor.patch_shuffle_loss_weight", _sel("legacy_augmentor.patchshuffle_weight", 0.0))
         )
+        self.patchshuffle_patch_weight = float(
+            _sel("legacy_augmentor.patch_shuffle_patch_weight", _sel("legacy_augmentor.patchshuffle_patch_weight", 1.0))
+        )
+        self.patchshuffle_cls_weight = float(
+            _sel("legacy_augmentor.patch_shuffle_cls_weight", _sel("legacy_augmentor.patchshuffle_cls_weight", 1.0))
+        )
         self.patchshuffle_temp = float(_sel("legacy_augmentor.patch_shuffle_temp", 0.1))
         self.patchshuffle_out_dim = int(_sel("legacy_augmentor.patchshuffle_out_dim", cfg.ibot.head_n_prototypes))
         patch_prob = OmegaConf.select(cfg, "legacy_augmentor.patch_shuffle_patch_probability")
@@ -187,14 +193,62 @@ class SSLAugmentedCropRoll(SSLMetaArch):
         self.patch_size = int(_sel("legacy_augmentor.patch_size", cfg.student.patch_size))
         self.bg_tile = int(_sel("legacy_augmentor.bg_tile", 16))
         
-        self.cropresize_loss = DINOLoss(self.dino_out_dim)
-        self.cropresize_loss_resized = DINOLoss(self.dino_out_dim)
+        dino_use_history = bool(_sel("dino.use_history", False))
+        dino_head_cache = bool(_sel("dino.head_cache", False))
+        dino_head_blance = bool(_sel("dino.head_blance_prototype", False))
+        dino_history_cache_size = int(_sel("dino.history_cache_size", 4096))
+        dino_head_cache_size = int(_sel("dino.head_cache_size", 4096))
+
+        def _build_dino_loss():
+            if dino_use_history:
+                return DINOLoss_skcache(
+                    self.dino_out_dim,
+                    use_history=True,
+                    history_cache_size=dino_history_cache_size,
+                    cfg=cfg,
+                )
+            if dino_head_cache:
+                return DINOLoss_skcache(
+                    self.dino_out_dim,
+                    student_temp=0.1,
+                    center_momentum=0.9,
+                    use_sinkhorn_queue=True,
+                    sk_cache=dino_head_cache_size,
+                )
+            if dino_head_blance:
+                return DINOLoss_skcache(
+                    self.dino_out_dim,
+                    student_temp=0.1,
+                    center_momentum=0.9,
+                    use_blance_p=True,
+                    blance_alpha=1.0,
+                    blance_momentum=0.9,
+                )
+            return DINOLoss(self.dino_out_dim)
+
+        self.cropresize_loss = _build_dino_loss()
+        self.cropresize_loss_resized = _build_dino_loss()
         
         # patch-shuffle: separate centers/heads for cls (DINO) and patch (iBOT) on resized/original
-        self.patchshuffle_cls_loss = DINOLoss(self.dino_out_dim)
-        self.patchshuffle_cls_loss_resized = DINOLoss(self.dino_out_dim)
-        self.patchshuffle_patch_loss = iBOTPatchLoss(self.patchshuffle_out_dim)
-        self.patchshuffle_patch_loss_resized = iBOTPatchLoss(self.patchshuffle_out_dim)
+        self.patchshuffle_cls_loss = _build_dino_loss()
+        self.patchshuffle_cls_loss_resized = _build_dino_loss()
+
+        ibot_use_history = bool(_sel("ibot.use_history", False))
+        ibot_history_cache_size = int(_sel("ibot.history_cache_size", 20000))
+        if ibot_use_history:
+            self.patchshuffle_patch_loss = iBOTPatchLoss(
+                self.patchshuffle_out_dim,
+                use_history=True,
+                history_cache_size=ibot_history_cache_size,
+            )
+            self.patchshuffle_patch_loss_resized = iBOTPatchLoss(
+                self.patchshuffle_out_dim,
+                use_history=True,
+                history_cache_size=ibot_history_cache_size,
+            )
+        else:
+            self.patchshuffle_patch_loss = iBOTPatchLoss(self.patchshuffle_out_dim, use_sk_cache=False)
+            self.patchshuffle_patch_loss_resized = iBOTPatchLoss(self.patchshuffle_out_dim, use_sk_cache=False)
         
         
         self._batch_meta = {}
@@ -943,7 +997,9 @@ class SSLAugmentedCropRoll(SSLMetaArch):
                     patch_loss, cls_loss = loss
                     loss_dict["aug/patchshuffle_patch"] = patch_loss
                     loss_dict["aug/patchshuffle_cls"] = cls_loss
-                    loss = patch_loss + cls_loss
+                    loss_dict["aug/patchshuffle_patch_weight"] = float(self.patchshuffle_patch_weight)
+                    loss_dict["aug/patchshuffle_cls_weight"] = float(self.patchshuffle_cls_weight)
+                    loss = (patch_loss * self.patchshuffle_patch_weight) + (cls_loss * self.patchshuffle_cls_weight)
                 loss_dict["aug/patchshuffle_ibot"] = loss
                 loss_dict["aug/patchshuffle_weight"] = float(self.patchshuffle_weight)
                 loss_acc = loss_acc + self.patchshuffle_weight * loss

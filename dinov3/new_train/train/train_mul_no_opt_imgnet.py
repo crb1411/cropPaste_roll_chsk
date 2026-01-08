@@ -486,7 +486,7 @@ def do_train(cfg, model, resume=False):
     start_iter = 0
     if resume:
         logger.info(f"Checkpoint found {cfg.checkpoint_dir}")
-        model.to_empty(device_type)
+        model.to_empty(device=device_type.type)
         start_iter = (
             load_checkpoint(
                 cfg.checkpoint_dir,
@@ -713,6 +713,7 @@ def main(argv=None):
             output=os.path.join(os.path.abspath(args.output_dir), "nan_logs"),
             name="nan_logger",
         )
+    logger.info(f'Use device: {device_type.type}')
     meta_arch = {
         "SSLMetaArch": SSLMetaArch,
         "SSLCropRoll": SSLAugmentedCropRoll,

@@ -36,7 +36,7 @@ class ShardedPatchDataset(Dataset):
             ["/ds1/big_index.npy", "/ds2/big_index.npy"],
         )
     """
-    def __init__(self, shard_dir, index_path, transform=None):
+    def __init__(self, shard_dir, index_path, transform=None, patch_h=None, patch_w=None):
         # 统一成列表
         if isinstance(shard_dir, str):
             shard_dir = [shard_dir]
@@ -58,6 +58,13 @@ class ShardedPatchDataset(Dataset):
         self.datasets = None      # 每个子数据集的 {index, shard_paths, shards_cache}
         self.cum_sizes = None     # 全局前缀和
         self.total = None
+        
+        self.patch_h = 224 if patch_h is None else patch_h
+        self.patch_w = 224 if patch_w is None else patch_w
+        if self.patch_h == self.patch_w and self.patch_h == 224:
+            self.shard_cap = SHARD_CAP
+        else:
+            self.shard_cap = int((SHARD_SIZE_BYTES // (self.patch_h * self.patch_w * PATCH_C)) * 0.98)
 
     # ---------- 延迟加载所有 index & shards 基本信息 ----------
     def _ensure_data(self):
@@ -127,13 +134,13 @@ class ShardedPatchDataset(Dataset):
 
             # === 关键：根据真实文件大小算可用 patch 数 ===
             file_size = os.path.getsize(path)
-            n_patches = file_size // (PATCH_H * PATCH_W * PATCH_C)
+            n_patches = file_size // (self.patch_h * self.patch_w * 3)
 
             ds["shards"][shard_id] = np.memmap(
                 path,
                 dtype=np.uint8,
                 mode="r",
-                shape=(n_patches, PATCH_H, PATCH_W, PATCH_C),
+                shape=(n_patches, self.patch_h, self.patch_w, 3),
             )
             # print(f'shard_{shard_id} len is: {len(ds["shards"][shard_id])}')
 
@@ -149,8 +156,8 @@ class ShardedPatchDataset(Dataset):
         rec = ds["index"][local_idx]
         gid = rec["global_idx"]
 
-        shard_id = gid // SHARD_CAP
-        local_id = gid % SHARD_CAP
+        shard_id = gid // self.shard_cap
+        local_id = gid % self.shard_cap
 
         shard = self._get_shard(ds_id, shard_id)
         max_local_id = len(shard)
@@ -179,8 +186,8 @@ class ShardedPatchDataset(Dataset):
             rec = ds["index"][local_idx]
             gid = rec["global_idx"]
 
-            shard_id = gid // SHARD_CAP
-            local_id = gid % SHARD_CAP
+            shard_id = gid // self.shard_cap
+            local_id = gid % self.shard_cap
 
             shard = self._get_shard(ds_id, shard_id)
             max_local_id = len(shard)

@@ -355,6 +355,24 @@ class SSLMetaArch(nn.Module):
         self.dino_loss.init_weights()
         self.ibot_patch_loss.init_weights()
         self.model_ema.load_state_dict(self.student.state_dict())
+        skip_loss_keys = [
+            "dino_loss.center",
+            "ibot_patch_loss.center",
+            "dino_loss.sinkhorn_knopp_teacher_ch_sk.history_Q",
+            "ibot_patch_loss.sinkhorn_knopp_teacher.history_Q",
+            "cropresize_loss.center",
+            "cropresize_loss_resized.center",
+            "patchshuffle_cls_loss.center",
+            "patchshuffle_cls_loss_resized.center",
+            "patchshuffle_patch_loss.center",
+            "patchshuffle_patch_loss_resized.center",
+            "cropresize_loss.sinkhorn_knopp_teacher_ch_sk.history_Q",
+            "cropresize_loss_resized.sinkhorn_knopp_teacher_ch_sk.history_Q",
+            "patchshuffle_cls_loss.sinkhorn_knopp_teacher_ch_sk.history_Q",
+            "patchshuffle_cls_loss_resized.sinkhorn_knopp_teacher_ch_sk.history_Q",
+            "patchshuffle_patch_loss.sinkhorn_knopp_teacher.history_Q",
+            "patchshuffle_patch_loss_resized.sinkhorn_knopp_teacher.history_Q",
+        ]
         if self.has_gram_teacher:
             if self.gram_ckpt is not None:
                 logger.info(f"Loading pretrained weights from {self.gram_ckpt}")
@@ -364,11 +382,8 @@ class SSLMetaArch(nn.Module):
                     skip_load_keys=[
                         "dino_head",
                         "ibot_head",
-                        "dino_loss.center",
-                        "ibot_patch_loss.center",
-                        "dino_loss.sinkhorn_knopp_teacher_ch_sk.history_Q",
-                        "ibot_patch_loss.sinkhorn_knopp_teacher.history_Q",
-                    ],
+                    ]
+                    + skip_loss_keys,
                     keys_not_sharded=["backbone.rope_embed.periods", "qkv.bias_mask"],
                     process_group=distributed.get_default_process_group(),
                 )
@@ -382,12 +397,7 @@ class SSLMetaArch(nn.Module):
             init_fsdp_model_from_checkpoint(
                 self.student,
                 self.cfg.student.resume_from_teacher_chkpt,
-                skip_load_keys=[
-                    "dino_loss.center",
-                    "ibot_patch_loss.center",
-                    "dino_loss.sinkhorn_knopp_teacher_ch_sk.history_Q",
-                    "ibot_patch_loss.sinkhorn_knopp_teacher.history_Q",
-                ],
+                skip_load_keys=skip_loss_keys,
                 keys_not_sharded=["backbone.rope_embed.periods", "qkv.bias_mask"],
                 process_group=distributed.get_process_subgroup(),
             )
@@ -398,12 +408,7 @@ class SSLMetaArch(nn.Module):
                 init_fsdp_model_from_checkpoint(
                     self.teacher,
                     self.cfg.distillation.checkpoint_path,
-                    skip_load_keys=[
-                        "dino_loss.center",
-                        "ibot_patch_loss.center",
-                        "dino_loss.sinkhorn_knopp_teacher_ch_sk.history_Q",
-                        "ibot_patch_loss.sinkhorn_knopp_teacher.history_Q",
-                    ],
+                    skip_load_keys=skip_loss_keys,
                     keys_not_sharded=["backbone.rope_embed.periods", "qkv.bias_mask"],
                 )
             else:
@@ -532,7 +537,7 @@ class SSLMetaArch(nn.Module):
             iteration=iteration,
             logger_freq=logger_freq,
         )  if not self.dino_loss.use_blance_p else self.dino_loss.blance_prototype(cls_after_head)
-        if logger_freq and iteration % logger_freq == 0:
+        if logger_freq and iteration % logger_freq*10 == 0:
             logger.info(f"[CH_SK] [cls_after_head] cls_after_head_max: {cls_after_head.max().item():.3e}, cls_after_head_min: {cls_after_head.min().item():.3e}, cls_after_head_mean: {cls_after_head.mean().item():.3e}, cls_after_head[-1,:5]: {cls_after_head[-1,:5].tolist()}")
             logger.info(f"[CH_SK] [cls_after_head] cls_centered_max: {cls_centered.max().item():.3e}, cls_centered_min: {cls_centered.min().item():.3e}, cls_centered_mean: {cls_centered.mean().item():.3e}, cls_centered[-1,:5]: {cls_centered[-1,:5].tolist()}")
         # [n_crops * B, K]
@@ -544,7 +549,7 @@ class SSLMetaArch(nn.Module):
             iteration=iteration,
             logger_freq=logger_freq,
         )  # [n_masked_patches, K]
-        if logger_freq and iteration % logger_freq == 0:
+        if logger_freq and iteration % logger_freq*10 == 0:
             logger.info(f"[CH_SK] [masked_patch_after_head] masked_patch_after_head_max: {masked_patch_after_head.max().item()}, masked_patch_after_head_min: {masked_patch_after_head.min().item()}, masked_patch_after_head_mean: {masked_patch_after_head.mean().item()}, masked_patch_after_head[-1,:5]: {masked_patch_after_head[-1,:5]}")
             logger.info(f"[CH_SK] [masked_patch_centered] masked_patch_centered_max: {masked_patch_centered.max().item()}, masked_patch_centered_min: {masked_patch_centered.min().item()}, masked_patch_centered_mean: {masked_patch_centered.mean().item()}, masked_patch_centered[-1,:5]: {masked_patch_centered[-1,:5]}")
         return {

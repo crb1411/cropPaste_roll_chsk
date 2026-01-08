@@ -113,6 +113,11 @@ class DataAugmentationDINO(object):
         # Global crops and gram teacher crops can have different sizes. We first take a crop of the maximum size
         # and then resize it to the desired size for global and gram teacher crops.
         global_crop_max_size = max(global_crops_size, gram_teacher_crops_size if gram_teacher_crops_size else 0)
+        self.global_crop_max_size = global_crop_max_size
+        self.resize_legacy_raw = v2.Resize(
+            global_crop_max_size,
+            interpolation=v2.InterpolationMode.BILINEAR,
+        )
 
         # random resized crop and flip
         self.geometric_augmentation_global = v2.Compose(
@@ -277,8 +282,11 @@ class DataAugmentationDINO(object):
         if self._legacy_augmentor is not None:
             try:
                 # 随机选取 img1_base or img2_base 0.7, 0.3 
-                img_ = np.random.choice([im1_base, im2_base], p=[0.7, 0.3])
+                img_ = im1_base if np.random.rand() < 0.7 else im2_base
                 tensor_input_resized = _image_to_tensor01(img_)
+                h, w = v2.functional.get_size(image)
+                if h != self.global_crop_max_size or w != self.global_crop_max_size:
+                    image = self.resize_legacy_raw(image)
                 tensor_input_raw = _image_to_tensor01(image=image)
                 output["legacy_aug"] = self._legacy_augmentor(tensor_input_raw)
                 output["legacy_aug_resized"] = self._legacy_augmentor(tensor_input_resized)
