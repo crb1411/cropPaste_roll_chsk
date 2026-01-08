@@ -8,6 +8,20 @@ from omegaconf import OmegaConf
 from dinov3.distributed import get_process_subgroup, get_subgroup_size
 logger = logging.getLogger("dinov3")
 
+_LOADED_STATE_KEYS: set[str] | None = None
+
+
+def set_loaded_state_keys(keys: set[str] | None) -> None:
+    global _LOADED_STATE_KEYS
+    _LOADED_STATE_KEYS = keys
+
+
+def _history_key_loaded(history_key: str) -> bool | None:
+    if _LOADED_STATE_KEYS is None:
+        return None
+    return history_key in _LOADED_STATE_KEYS or f"model.{history_key}" in _LOADED_STATE_KEYS
+
+
 class CH_SK(nn.Module):
     """
     Cumulative History Sinkhorn
@@ -27,7 +41,7 @@ class CH_SK(nn.Module):
         super().__init__()
         self.K = K
         self.history_cache_size = history_cache_size
-        self.register_buffer("history_Q", torch.zeros(K))
+        self.register_buffer("history_Q", torch.full((K,), float("nan")))
         self._history_Q_initialized = False
         self.logits_temp_max = 30.0 if logits_temp_max is None else logits_temp_max
 
@@ -77,10 +91,24 @@ class CH_SK(nn.Module):
             error_msgs,
         )
         history_key = prefix + "history_Q"
-        history_missing = history_key in missing_keys
-        if history_missing:
+        loaded_state = _history_key_loaded(history_key)
+        if loaded_state is None:
+            history_missing = history_key in missing_keys
+        else:
+            history_missing = not loaded_state
+        if history_missing and history_key in missing_keys:
             missing_keys.remove(history_key)
-        self._history_Q_initialized = not history_missing
+        history_has_nan = torch.isnan(self.history_Q).any()
+        if history_missing or history_has_nan:
+            if history_missing:
+                logger.info(f"load {history_key} missing")
+            if history_has_nan:
+                logger.info(f"load {history_key} missing (nan)")
+            self.history_Q.fill_(float("nan"))
+            self._history_Q_initialized = False
+        else:
+            logger.info(f"load {history_key} success")
+            self._history_Q_initialized = True
 
     def _update_history(self, Q_local):
         self._ensure_history_Q(Q_local)

@@ -160,6 +160,18 @@ def load_checkpoint(
     if optimizer is not None:
         to_load["optimizer"] = dcpsd.get_optimizer_state_dict(model, optimizer)
     to_load.update(others)
+    loaded_keys = None
+    set_loaded_state_keys = None
+    try:
+        metadata = dcpfs.FileSystemReader(ckpt_dir).read_metadata()
+        if hasattr(metadata, "state_dict_metadata"):
+            loaded_keys = set(metadata.state_dict_metadata.keys())
+            from dinov3.loss.ch_sk import set_loaded_state_keys as _set_loaded_state_keys
+
+            set_loaded_state_keys = _set_loaded_state_keys
+            set_loaded_state_keys(loaded_keys)
+    except Exception:
+        logger.exception("Failed to read checkpoint metadata for CH_SK")
     logger.info('begin dcp load')
     dcp.load(
         to_load,
@@ -170,6 +182,11 @@ def load_checkpoint(
     iteration = to_load["iteration"]
     logger.info('set dcp model')
     dcpsd.set_model_state_dict(model, to_load["model"])
+    if set_loaded_state_keys is not None:
+        try:
+            set_loaded_state_keys(None)
+        except Exception:
+            logger.exception("Failed to clear CH_SK loaded keys for DCP checkpoint")
     logger.info('dcp model ok')
     if optimizer is not None:
         logger.info('set dcp opt')
@@ -320,13 +337,25 @@ def init_fsdp_model_from_checkpoint(
             )
             for key, tensor in chkpt.items()
         }
-        model.load_state_dict(
-            {
-                key: tensor
-                for key, tensor in chkpt.items()
-                if not any(skip_load_key in key for skip_load_key in skip_load_keys)
-            }
-        )
+        filtered_chkpt = {
+            key: tensor
+            for key, tensor in chkpt.items()
+            if not any(skip_load_key in key for skip_load_key in skip_load_keys)
+        }
+        loaded_keys = None
+        try:
+            from dinov3.loss.ch_sk import set_loaded_state_keys
+
+            loaded_keys = set(filtered_chkpt.keys())
+            set_loaded_state_keys(loaded_keys)
+        except Exception:
+            logger.exception("Failed to set CH_SK loaded keys for standard checkpoint")
+        model.load_state_dict(filtered_chkpt)
+        if loaded_keys is not None:
+            try:
+                set_loaded_state_keys(None)
+            except Exception:
+                logger.exception("Failed to clear CH_SK loaded keys for standard checkpoint")
     else:  # DCP checkpoint
         load_checkpoint(ckpt_dir=checkpoint_path, model=model, process_group=process_group)
 

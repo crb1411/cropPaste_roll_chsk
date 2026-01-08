@@ -1009,8 +1009,8 @@ class SSLAugmentedCropRoll(SSLMetaArch):
                 logger_freq=logger_freq,
             )
             if loss is not None:
-                loss_dict["aug/cropresize_ce"] = loss
-                loss_dict["aug/cropresize_weight"] = float(self.cropresize_weight)
+                loss_dict["aug/cropresize_cls_loss"] = loss
+                loss_dict["aug/cropresize_cls_loss_weight"] = float(self.cropresize_weight)
                 loss_acc = loss_acc + self.cropresize_weight * loss
 
         # 2) PatchShuffle iBOT-style CE (patch logits + perm_idx)
@@ -1021,14 +1021,14 @@ class SSLAugmentedCropRoll(SSLMetaArch):
             if loss is not None:
                 if isinstance(loss, tuple):
                     patch_loss, cls_loss = loss
-                    loss_dict["aug/patchshuffle_patch"] = patch_loss
-                    loss_dict["aug/patchshuffle_cls"] = cls_loss
-                    loss_dict["aug/patchshuffle_patch_weight"] = float(self.patchshuffle_patch_weight)
-                    loss_dict["aug/patchshuffle_cls_weight"] = float(self.patchshuffle_cls_weight)
+                    loss_dict["aug/patchshuffle_patch_loss"] = patch_loss
+                    loss_dict["aug/patchshuffle_cls_loss"] = cls_loss
+                    loss_dict["aug/patchshuffle_patch_loss_weight"] = float(self.patchshuffle_patch_weight)
+                    loss_dict["aug/patchshuffle_cls_loss_weight"] = float(self.patchshuffle_cls_weight)
                     loss = (patch_loss * self.patchshuffle_patch_weight) + (cls_loss * self.patchshuffle_cls_weight)
-                loss_dict["aug/patchshuffle_ibot"] = loss
-                loss_dict["aug/patchshuffle_weight"] = float(self.patchshuffle_weight)
-                loss_acc = loss_acc + self.patchshuffle_weight * loss
+                loss_dict["aug/patchshuffle_cls_patch"] = loss
+                # loss_dict["aug/patchshuffle_weight"] = float(self.patchshuffle_weight)
+                loss_acc = loss_acc + loss
 
         # 3) Anchor CLS (proj/bottleneck space)
         if self.anchor_cls_weight > 0.0:

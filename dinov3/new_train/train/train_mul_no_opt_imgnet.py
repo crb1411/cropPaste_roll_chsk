@@ -388,6 +388,11 @@ def get_collate(cfg):
     )
     return collate_fn
 
+def _wi(worker_id):
+    import os, multiprocessing as mp_
+    print(f"[WORKER] pid={os.getpid()} worker={worker_id} start_method={mp_.get_start_method()}")
+
+
 def build_CombinedDataset_loader(cfg, start_iter=0):
     
     # dataset_svs = build_dataset_from_cfg_wsi(cfg, DatasetType.SVS_DATE)
@@ -444,18 +449,32 @@ def build_CombinedDataset_loader(cfg, start_iter=0):
         ratios=ratios
     )
     collate_fn = get_collate(cfg)
+
     loader_combined = torch.utils.data.DataLoader(
         dataset_combined,
         sampler=sampler_combined,
         batch_size=cfg.train.batch_size_per_gpu,
         num_workers=cfg.train.num_workers,
-        pin_memory=True,
-        drop_last=True,
+        multiprocessing_context="spawn",
+        worker_init_fn=_wi,
         persistent_workers=True,
         collate_fn=collate_fn,
+        pin_memory=True,
+        drop_last=True,
         timeout=0,
-        multiprocessing_context="spawn",
     )
+    # loader_combined = torch.utils.data.DataLoader(
+    #     dataset_combined,
+    #     sampler=sampler_combined,
+    #     batch_size=cfg.train.batch_size_per_gpu,
+    #     num_workers=cfg.train.num_workers,
+    #     pin_memory=True,
+    #     drop_last=True,
+    #     persistent_workers=True,
+    #     collate_fn=collate_fn,
+    #     timeout=0,
+    #     multiprocessing_context="spawn",
+    # )
     return loader_combined
 
 
