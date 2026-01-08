@@ -19,6 +19,7 @@ class CropPaste:
         resize_scale_h: Tuple[float, float] = (0.5, 0.9),
         resize_scale_w: Tuple[float, float] = (0.5, 0.9),
         crop_scale: Tuple[float, float] = (0.7, 1.0),
+        crop_prob: float = 0.7,
         background: float | Sequence[float] = 1.0,
         tile: int = 16,
         grid_snap: Optional[int] = 16,
@@ -29,6 +30,7 @@ class CropPaste:
         self.resize_scale_h = resize_scale_h
         self.resize_scale_w = resize_scale_w
         self.crop_scale = crop_scale
+        self.crop_prob = float(crop_prob)
         self.background = background
         self.tile = tile
         self.grid_snap = grid_snap
@@ -55,17 +57,29 @@ class CropPaste:
         dev = x01.device
         rng = rng or self.rng
 
+        do_crop = True
         if crop_hw is None:
+            crop_prob = max(0.0, min(1.0, self.crop_prob))
+            if crop_prob < 1.0:
+                rv = torch.rand((), device=dev, generator=rng).item()
+                do_crop = rv < crop_prob
+        if crop_hw is None and do_crop:
             crop_h = torch.empty((), device=dev).uniform_(*self.crop_scale, generator=rng).item()
             crop_w = torch.empty((), device=dev).uniform_(*self.crop_scale, generator=rng).item()
             ch, cw = int(round(H * crop_h)), int(round(W * crop_w))
+        elif crop_hw is None and not do_crop:
+            ch, cw = H, W
         else:
             ch, cw = max(1, min(H, int(crop_hw[0]))), max(1, min(W, int(crop_hw[1])))
 
         max_top = max(0, H - ch)
         max_left = max(0, W - cw)
-        top = int(torch.randint(0, max_top + 1, (), device=dev, generator=rng).item())
-        left = int(torch.randint(0, max_left + 1, (), device=dev, generator=rng).item())
+        if ch == H and cw == W:
+            top = 0
+            left = 0
+        else:
+            top = int(torch.randint(0, max_top + 1, (), device=dev, generator=rng).item())
+            left = int(torch.randint(0, max_left + 1, (), device=dev, generator=rng).item())
 
         crop = x01[:, top : top + ch, left : left + cw]
 

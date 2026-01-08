@@ -22,6 +22,7 @@ from .crop_paste import CropPaste
 @dataclass
 class AugmentSwitch:
     use_crop: bool = True
+    crop_prob: float = 0.7
     use_color: bool = False
     use_shift: bool = True
     use_white: bool = False
@@ -59,6 +60,7 @@ class Augmentor:
                 resize_scale_h=(0.5, 0.9),
                 resize_scale_w=(0.5, 0.9),
                 crop_scale=(0.7, 1.0),
+                crop_prob=self.sw.crop_prob,
                 background=background,
                 tile=16,
                 grid_snap=16,

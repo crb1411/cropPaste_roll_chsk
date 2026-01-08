@@ -12,7 +12,8 @@ import torch
 from torch.utils.data.sampler import Sampler
 
 from dinov3.distributed import get_rank, get_world_size
-
+import logging 
+logger = logging.getLogger("dinov3")
 
 class EpochSampler(Sampler):
     def __init__(
@@ -153,7 +154,9 @@ def _new_shuffle_tensor_slice(
     drop_count = stop - step * count
     if drop_count:
         warnings.warn(f"# of dropped samples: {drop_count}", stacklevel=1)
+    logger.info(f'begin create sub_perm, len: {count}')
     indices = torch.randperm(count, dtype=dtype, generator=generator)
+    logger.info(f'create sub_perm success, len: {count}')
     return tensor[start::step][indices].numpy()
 
 
@@ -215,8 +218,9 @@ class ShardedInfiniteSampler(Sampler):
         # Always shuffle everything first
         generator.manual_seed(self._seed)
         dtype = _get_torch_dtype(self._sample_count)
+        logger.info(f'begin create perm, len: {self._sample_count}')
         perm = torch.randperm(self._sample_count, dtype=dtype, generator=generator)
-
+        logger.info(f'create perm success, len: {self._sample_count}')
         while True:
             # Re-seed on each iteration to allow skipping whole permutations
             seed = _make_seed(self._seed, self._start, self._iter_count)

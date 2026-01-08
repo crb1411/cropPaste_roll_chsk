@@ -20,6 +20,7 @@ sys.path.append(str(REPO_ROOT))
 from dinov3.data.masking import MaskingGenerator
 from dinov3.loss import DINOLoss, DINOLoss_skcache, iBOTPatchLoss
 from dinov3.new_train.train.ssl_meta_arch import SSLMetaArch
+from dinov3.new_train.utils import get_device
 logger = logging.getLogger("dinov3")
 
 
@@ -82,16 +83,23 @@ def _cosine_anchor_loss(x: Tensor, anchor: Tensor) -> Tensor:
     return (1.0 - (x * a).sum(dim=-1)).mean()
 
 
-def _to_cuda_any(x: Any, *, non_blocking: bool = True) -> Any:
-    """Recursively move tensors to CUDA; keep python scalars / strings unchanged."""
+def _to_device_any(
+    x: Any,
+    *,
+    device: Optional[torch.device] = None,
+    non_blocking: bool = True,
+) -> Any:
+    """Recursively move tensors to the selected device; keep python scalars / strings unchanged."""
+    if device is None:
+        device = get_device()
     if torch.is_tensor(x):
-        return x.cuda(non_blocking=non_blocking)
+        return x.to(device=device, non_blocking=non_blocking)
     if isinstance(x, dict):
-        return {k: _to_cuda_any(v, non_blocking=non_blocking) for k, v in x.items()}
+        return {k: _to_device_any(v, device=device, non_blocking=non_blocking) for k, v in x.items()}
     if isinstance(x, list):
-        return [_to_cuda_any(v, non_blocking=non_blocking) for v in x]
+        return [_to_device_any(v, device=device, non_blocking=non_blocking) for v in x]
     if isinstance(x, tuple):
-        return tuple(_to_cuda_any(v, non_blocking=non_blocking) for v in x)
+        return tuple(_to_device_any(v, device=device, non_blocking=non_blocking) for v in x)
     return x
 
 
@@ -270,9 +278,11 @@ class SSLAugmentedCropRoll(SSLMetaArch):
 
         # move legacy aug dicts (including tensors nested inside info list[dict]) to cuda
         if "legacy_aug_resized" in data and isinstance(data["legacy_aug_resized"], dict):
-            data["legacy_aug_resized"] = _to_cuda_any(data["legacy_aug_resized"], non_blocking=True)
+            data["legacy_aug_resized"] = _to_device_any(
+                data["legacy_aug_resized"], device=self.device, non_blocking=True
+            )
         if "legacy_aug" in data and isinstance(data["legacy_aug"], dict):
-            data["legacy_aug"] = _to_cuda_any(data["legacy_aug"], non_blocking=True)
+            data["legacy_aug"] = _to_device_any(data["legacy_aug"], device=self.device, non_blocking=True)
 
         try:
             return super().forward_backward(data, teacher_temp=teacher_temp, iteration=iteration, **ignored_kwargs)
