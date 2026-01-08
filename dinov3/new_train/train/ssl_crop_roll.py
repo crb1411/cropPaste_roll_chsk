@@ -750,14 +750,14 @@ class SSLAugmentedCropRoll(SSLMetaArch):
             teacher_temp=self.cropresize_temp,
             iteration=iteration,
             logger_freq=logger_freq,
-            logger_loss="cropresize_resized",
+            logger_loss="cropresize_resized_cls",
         )
         teacher_o_targets = self.cropresize_loss.sinkhorn_knopp_teacher(
             teacher_cls_logits_original,
             teacher_temp=self.cropresize_temp,
             iteration=iteration,
             logger_freq=logger_freq,
-            logger_loss="cropresize_original",
+            logger_loss="cropresize_original_cls",
         )
         loss_crop_resize = self.cropresize_loss_resized(
             student_cls_logits_resized.unsqueeze(0), teacher_r_targets.unsqueeze(0)
@@ -771,6 +771,8 @@ class SSLAugmentedCropRoll(SSLMetaArch):
         *,
         legacy_student: Mapping[str, Tensor],
         legacy_teacher: Mapping[str, Tensor],
+        iteration: int = 0,
+        logger_freq: int = 0,
     ) -> Optional[Tuple[Tensor, Tensor]]:
         if legacy_student is None or legacy_teacher is None:
             return None
@@ -803,6 +805,9 @@ class SSLAugmentedCropRoll(SSLMetaArch):
                     teacher_patch_logits_resized,
                     teacher_temp=self.patchshuffle_temp,
                     n_masked_patches_tensor=teacher_r_count,
+                    iteration=iteration,
+                    logger_freq=logger_freq,
+                    logger_loss="raw_patch_resized",
                 )
                 loss_resized = self.patchshuffle_patch_loss_resized.forward_masked(
                     student_patch_logits_resized,
@@ -833,6 +838,9 @@ class SSLAugmentedCropRoll(SSLMetaArch):
                     teacher_patch_logits_original,
                     teacher_temp=self.patchshuffle_temp,
                     n_masked_patches_tensor=teacher_o_count,
+                    iteration=iteration,
+                    logger_freq=logger_freq,
+                    logger_loss="raw_patch_original",
                 )
                 loss_original = self.patchshuffle_patch_loss.forward_masked(
                     student_patch_logits_original,
@@ -864,10 +872,18 @@ class SSLAugmentedCropRoll(SSLMetaArch):
             return None
 
         teacher_r_cls_targets = self.patchshuffle_cls_loss_resized.sinkhorn_knopp_teacher(
-            teacher_cls_logits_resized, teacher_temp=self.patchshuffle_temp
+            teacher_cls_logits_resized, 
+            teacher_temp=self.patchshuffle_temp,
+            iteration=iteration,
+            logger_freq=logger_freq,
+            logger_loss="raw_cls_resized",
         )
         teacher_o_cls_targets = self.patchshuffle_cls_loss.sinkhorn_knopp_teacher(
-            teacher_cls_logits_original, teacher_temp=self.patchshuffle_temp
+            teacher_cls_logits_original, 
+            teacher_temp=self.patchshuffle_temp,
+            iteration=iteration,
+            logger_freq=logger_freq,
+            logger_loss="raw_cls_original",
         )
         cls_loss = self.patchshuffle_cls_loss_resized(
             student_cls_logits_resized.unsqueeze(0), teacher_r_cls_targets.unsqueeze(0)

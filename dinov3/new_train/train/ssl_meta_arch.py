@@ -536,6 +536,7 @@ class SSLMetaArch(nn.Module):
             teacher_temp=teacher_temp,
             iteration=iteration,
             logger_freq=logger_freq,
+            logger_loss="dino_cls_global",
         )  if not self.dino_loss.use_blance_p else self.dino_loss.blance_prototype(cls_after_head)
         if logger_freq and iteration % logger_freq*10 == 0:
             logger.info(f"[CH_SK] [cls_after_head] cls_after_head_max: {cls_after_head.max().item():.3e}, cls_after_head_min: {cls_after_head.min().item():.3e}, cls_after_head_mean: {cls_after_head.mean().item():.3e}, cls_after_head[-1,:5]: {cls_after_head[-1,:5].tolist()}")
@@ -548,6 +549,7 @@ class SSLMetaArch(nn.Module):
             n_masked_patches_tensor=n_masked_patches_tensor,
             iteration=iteration,
             logger_freq=logger_freq,
+            logger_loss="ibot_patch_global",
         )  # [n_masked_patches, K]
         if logger_freq and iteration % logger_freq*10 == 0:
             logger.info(f"[CH_SK] [masked_patch_after_head] masked_patch_after_head_max: {masked_patch_after_head.max().item()}, masked_patch_after_head_min: {masked_patch_after_head.min().item()}, masked_patch_after_head_mean: {masked_patch_after_head.mean().item()}, masked_patch_after_head[-1,:5]: {masked_patch_after_head[-1,:5]}")

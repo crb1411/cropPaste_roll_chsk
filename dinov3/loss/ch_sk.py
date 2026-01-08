@@ -99,6 +99,7 @@ class CH_SK(nn.Module):
         n_iterations: int = 3,
         iteration: int = 0,
         logger_freq: int = 0,
+        logger_loss: str | None = None,
         *,
         # forward 级别可覆盖（不传则用 __init__ 的默认值）
         boost_alpha: float | None = None,
@@ -156,6 +157,7 @@ class CH_SK(nn.Module):
         # logging
         # ===============================
         if logger is not None and logger_freq and iteration % logger_freq == 0:
+            loss_tag = f"[{logger_loss}] " if logger_loss else ""
             with torch.no_grad():
                 if boost_mask.any():
                     boost_idx = torch.nonzero(boost_mask, as_tuple=False).flatten()
@@ -166,7 +168,7 @@ class CH_SK(nn.Module):
                     # 展示最小的 show_n 个
 
                     logger.info(
-                        f"[CHSK-BOOST][iter={iteration}] "
+                        f"{loss_tag}[CHSK-BOOST][iter={iteration}] "
                         f"alpha={alpha:.3g} w_max={w_max:.3g} divisor={divisor:.3g} | "
                         f"boost_cnt={boost_idx.numel()} | "
                         f"mean=%.3e thr=%.3e | "
@@ -177,24 +179,24 @@ class CH_SK(nn.Module):
                     )
                 else:
                     logger.info(
-                        f"[CHSK-BOOST][iter={iteration}] no boost | "
+                        f"{loss_tag}[CHSK-BOOST][iter={iteration}] no boost | "
                         f"alpha={alpha:.3g} w_max={w_max:.3g} divisor={divisor:.3g} | "
                         f"min_hist=%.3e mean=%.3e thr=%.3e"
                         % (hist.min().item(), mean_hist.item(), threshold.item())
                     )
 
                 logger.info(
-                    f"iteration {iteration}, logits_temp: max {logits_temp[-1].max().item():.3e}, "
+                    f"{loss_tag}iteration {iteration}, logits_temp: max {logits_temp[-1].max().item():.3e}, "
                     f"min {logits_temp[-1].min().item():.3e}, mean {logits_temp[-1].mean().item():.3e}, "
                     f"(-1, :5){['%.3e' % v for v in logits_temp[-1, :5].tolist()]}"
                 )
                 logger.info(
-                    f"iteration {iteration}, logits_temp_clamp: max {logits_temp_clamp[-1].max().item():.3e}, "
+                    f"{loss_tag}iteration {iteration}, logits_temp_clamp: max {logits_temp_clamp[-1].max().item():.3e}, "
                     f"min {logits_temp_clamp[-1].min().item():.3e}, mean {logits_temp_clamp[-1].mean().item():.3e}, "
                     f"(-1, :5){['%.3e' % v for v in logits_temp_clamp[-1, :5].tolist()]}"
                 )
                 logger.info(
-                    f"iteration {iteration}, "
+                    f"{loss_tag}iteration {iteration}, "
                     f"Q_batch_max: {Q_batch.t()[-1].max().item():.3e}, "
                     f"Q_batch_min: {Q_batch.t()[-1].min().item():.3e}, "
                     f"Q_batch_mean: {Q_batch.t()[-1].mean().item():.3e}, "

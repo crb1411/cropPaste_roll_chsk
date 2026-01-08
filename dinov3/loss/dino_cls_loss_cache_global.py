@@ -143,13 +143,28 @@ class DINOLoss_skcache(nn.Module):
 
     # ---- 关键：Sinkhorn + Queue（全局版本，无 dist 运算）----
     @torch.no_grad()
-    def sinkhorn_knopp_teacher(self, teacher_output, teacher_temp, n_iterations=3, iteration=0, logger_freq=20):
+    def sinkhorn_knopp_teacher(
+        self,
+        teacher_output,
+        teacher_temp,
+        n_iterations=3,
+        iteration=0,
+        logger_freq=20,
+        logger_loss=None,
+    ):
         """
         teacher_output: shape [B_local, K]
 
         """
         if self.use_history: 
-            return self.sinkhorn_knopp_teacher_ch_sk(teacher_output, teacher_temp, n_iterations, iteration=iteration, logger_freq=logger_freq)
+            return self.sinkhorn_knopp_teacher_ch_sk(
+                teacher_output,
+                teacher_temp,
+                n_iterations,
+                iteration=iteration,
+                logger_freq=logger_freq,
+                logger_loss=logger_loss,
+            )
         # 当前 rank 的 batch 大小
         B_local = teacher_output.shape[0]
 
