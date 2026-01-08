@@ -19,7 +19,7 @@ class CombinedDataset:
     def __init__(self, dataset_list):
         self.datasets = dataset_list
         self.lengths = [len(d) for d in dataset_list]
-        self.print_ = 0
+        self.print_ = 1
 
     def __getitem__(self, index_tuple):
         if self.print_:
@@ -29,7 +29,7 @@ class CombinedDataset:
         if self.print_:
             logger.info(f'第 {self.print_} 次加载数据， dataset_{ds_idx}: {sample_idx}成功')
             self.print_ += 1
-            if self.print_ >=20:
+            if self.print_ >=100:
                 self.print_ = 0
         return data_idx
 
@@ -51,8 +51,9 @@ class CombinedSampler:
         rng = np.random.default_rng()
 
         # 变成可重启的迭代器
+        logger.info(f'Begin create combined sampler: {len(self.dataset_samplers)} Samplers')
         iters = [iter(s) for s in self.dataset_samplers]
-
+        logger.info(f'Create combined samplern done')
         while True:
             # ---- 1) 按比例选 dataset ----
             ds_idx = rng.choice(len(self.dataset_samplers), p=self.ratios)
