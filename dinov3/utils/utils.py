@@ -84,6 +84,11 @@ def fix_random_seeds(seed: int = 31):
     """
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+    if hasattr(torch, "npu") and torch.npu.is_available():
+        try:
+            torch.npu.manual_seed_all(seed)
+        except Exception as e:
+            print(f'torch_npu manual_seed_all({seed}) failed: {e}')
     np.random.seed(seed)
     random.seed(seed)
 

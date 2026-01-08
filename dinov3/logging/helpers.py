@@ -12,8 +12,28 @@ from collections import defaultdict, deque
 import torch
 
 import dinov3.distributed as distributed
+from dinov3.new_train.utils import get_device
 
 logger = logging.getLogger("dinov3")
+
+
+def _get_memory_stats(device_type: str) -> dict[str, float] | None:
+    if device_type == "cuda" and torch.cuda.is_available():
+        return {
+            "current": torch.cuda.memory_allocated(),
+            "max": torch.cuda.max_memory_allocated(),
+        }
+    if device_type == "npu" and hasattr(torch, "npu") and torch.npu.is_available():
+        return {
+            "current": torch.npu.memory_allocated(),
+            "max": torch.npu.max_memory_allocated(),
+        }
+    if device_type == "xpu" and hasattr(torch, "xpu") and torch.xpu.is_available():
+        return {
+            "current": torch.xpu.memory_allocated(),
+            "max": torch.xpu.max_memory_allocated(),
+        }
+    return None
 
 
 class MetricLogger(object):
@@ -84,7 +104,8 @@ class MetricLogger(object):
             "time: {time}",
             "data: {data}",
         ]
-        if torch.cuda.is_available():
+        device_type = get_device().type
+        if _get_memory_stats(device_type) is not None:
             log_list += ["mem: {current_memory:.0f}"]
             log_list += ["(max mem: {max_memory:.0f})"]
 
@@ -101,7 +122,8 @@ class MetricLogger(object):
                 self.dump_in_output_file(iteration=i, iter_time=iter_time.avg, data_time=data_time.avg)
                 eta_seconds = iter_time.global_avg * (n_iterations - i)
                 eta_string = str(datetime.timedelta(seconds=int(eta_seconds)))
-                if torch.cuda.is_available():
+                mem_stats = _get_memory_stats(device_type)
+                if mem_stats is not None:
                     logger.info(
                         log_msg.format(
                             i,
@@ -110,8 +132,8 @@ class MetricLogger(object):
                             meters=str(self),
                             time=str(iter_time),
                             data=str(data_time),
-                            current_memory=torch.cuda.memory_allocated() / MB,
-                            max_memory=torch.cuda.max_memory_allocated() / MB,
+                            current_memory=mem_stats["current"] / MB,
+                            max_memory=mem_stats["max"] / MB,
                         )
                     )
                 else:
@@ -158,7 +180,8 @@ class SmoothedValue:
         """
         if not distributed.is_enabled():
             return
-        t = torch.tensor([self.count, self.total], dtype=torch.float64, device="cuda")
+        device = get_device()
+        t = torch.tensor([self.count, self.total], dtype=torch.float64, device=device)
         torch.distributed.barrier()
         torch.distributed.all_reduce(t)
         t = t.tolist()
