@@ -37,10 +37,11 @@ def _get_memory_stats(device_type: str) -> dict[str, float] | None:
 
 
 class MetricLogger(object):
-    def __init__(self, delimiter="\t", output_file=None):
+    def __init__(self, delimiter="\t", output_file=None, debug=True):
         self.meters = defaultdict(SmoothedValue)
         self.delimiter = delimiter
         self.output_file = output_file
+        self.debug = debug
 
     def update(self, **kwargs):
         for k, v in kwargs.items():
@@ -111,9 +112,13 @@ class MetricLogger(object):
 
         log_msg = self.delimiter.join(log_list)
         MB = 1024.0 * 1024.0
+        logger.info(f'开始遍历了 {i}->{n_iterations}')
         for obj in iterable:
             if i >= n_iterations:
                 break
+            if self.debug:
+                logger.info(f'load first data sucess: data.keys() = {obj.keys()}')
+                self.debug = False
 
             data_time.update(time.time() - end)
             yield obj
