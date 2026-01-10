@@ -1,6 +1,4 @@
-﻿# dinov3/models/ssl_meta_arch_augmented.py
-
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import logging
 import math
@@ -19,6 +17,7 @@ sys.path.append(str(REPO_ROOT))
 
 from dinov3.data.masking import MaskingGenerator
 from dinov3.loss import DINOLoss, DINOLoss_skcache, iBOTPatchLoss
+from dinov3.new_train.models.inverse_patch import InversePatchEmbeddingMLP
 from dinov3.new_train.train.ssl_meta_arch import SSLMetaArch
 from dinov3.new_train.utils import get_device
 logger = logging.getLogger("dinov3")
@@ -189,6 +188,9 @@ class SSLAugmentedCropRoll(SSLMetaArch):
 
         self.anchor_cls_weight = float(_sel("legacy_augmentor.anchor_cls_weight", 0.0))
         self.anchor_bg_patch_weight = float(_sel("legacy_augmentor.anchor_bg_patch_weight", 0.0))
+        self.bridge_roll_weight = float(
+            _sel("legacy_augmentor.bridge_roll_weight", _sel("legacy_augmentor.bridge_weight", 0.0))
+        )
 
         # ---- anchor space: project to bottleneck dim ----
         bottleneck_dim = int(_sel("legacy_augmentor.anchor_bottleneck_dim", cfg.dino.head_bottleneck_dim))
@@ -200,6 +202,10 @@ class SSLAugmentedCropRoll(SSLMetaArch):
         # patch/grid size for bg mask build (tile=16 matches your CropPaste.tile)
         self.patch_size = int(_sel("legacy_augmentor.patch_size", cfg.student.patch_size))
         self.bg_tile = int(_sel("legacy_augmentor.bg_tile", 16))
+
+        if self.bridge_roll_weight > 0.0 and self.bridge_patch_mlp is None:
+            bridge_hidden_dim = OmegaConf.select(cfg, "bridge.hidden_dim", default=None)
+            self.bridge_patch_mlp = InversePatchEmbeddingMLP(self.embed_dim, hidden_dim=bridge_hidden_dim)
         
         dino_use_history = bool(_sel("dino.use_history", False))
         dino_head_cache = bool(_sel("dino.head_cache", False))
@@ -599,6 +605,12 @@ class SSLAugmentedCropRoll(SSLMetaArch):
                     student_patch_tokens_resized = student_shift_resized_out["x_norm_patchtokens"]
                     student_patch_tokens_original = student_shift_original_out["x_norm_patchtokens"]
 
+                    if self.bridge_roll_weight > 0.0 and self.bridge_patch_mlp is not None:
+                        bridge_resized_pre = self.bridge_patch_mlp(student_patch_tokens_resized)
+                        bridge_original_pre = self.bridge_patch_mlp(student_patch_tokens_original)
+                        outputs["bridge_roll_logits_resized"] = self.student.dino_head(bridge_resized_pre)
+                        outputs["bridge_roll_logits_original"] = self.student.dino_head(bridge_original_pre)
+
                     if perm_pair is not None:
                         sample_mask = self._get_patchshuffle_sample_mask(
                             n_tokens=student_patch_tokens_resized.shape[1],
@@ -893,6 +905,22 @@ class SSLAugmentedCropRoll(SSLMetaArch):
         if patch_loss is None:
             patch_loss = cls_loss.new_zeros(())
 
+        bridge_resized_loss = None
+        bridge_original_loss = None
+        if self.bridge_roll_weight > 0.0:
+            bridge_logits_resized = legacy_student.get("bridge_roll_logits_resized")
+            bridge_logits_original = legacy_student.get("bridge_roll_logits_original")
+            if torch.is_tensor(bridge_logits_resized):
+                bridge_resized_loss = self.patchshuffle_cls_loss_resized(
+                    bridge_logits_resized.unsqueeze(0), teacher_r_cls_targets.unsqueeze(0)
+                )
+            if torch.is_tensor(bridge_logits_original):
+                bridge_original_loss = self.patchshuffle_cls_loss(
+                    bridge_logits_original.unsqueeze(0), teacher_o_cls_targets.unsqueeze(0)
+                )
+
+        if bridge_resized_loss is not None or bridge_original_loss is not None:
+            return patch_loss, cls_loss, bridge_resized_loss, bridge_original_loss
         return patch_loss, cls_loss
 
     def _loss_anchor_cls_from_student_global(self, *, student_global: Mapping[str, Any]) -> Tensor:
@@ -1019,8 +1047,20 @@ class SSLAugmentedCropRoll(SSLMetaArch):
                 legacy_student=legacy_student, legacy_teacher=legacy_teacher
             )
             if loss is not None:
+                bridge_roll_loss = None
                 if isinstance(loss, tuple):
-                    patch_loss, cls_loss = loss
+                    if len(loss) == 2:
+                        patch_loss, cls_loss = loss
+                    else:
+                        patch_loss, cls_loss, bridge_resized_loss, bridge_original_loss = loss
+                        bridge_roll_loss = cls_loss.new_zeros(())
+                        if bridge_resized_loss is not None:
+                            loss_dict["aug/bridge_roll_resized_loss"] = bridge_resized_loss
+                            bridge_roll_loss = bridge_roll_loss + bridge_resized_loss
+                        if bridge_original_loss is not None:
+                            loss_dict["aug/bridge_roll_original_loss"] = bridge_original_loss
+                            bridge_roll_loss = bridge_roll_loss + bridge_original_loss
+
                     loss_dict["aug/patchshuffle_patch_loss"] = patch_loss
                     loss_dict["aug/patchshuffle_cls_loss"] = cls_loss
                     loss_dict["aug/patchshuffle_patch_loss_weight"] = float(self.patchshuffle_patch_weight)
@@ -1029,6 +1069,9 @@ class SSLAugmentedCropRoll(SSLMetaArch):
                 loss_dict["aug/patchshuffle_cls_patch"] = loss
                 # loss_dict["aug/patchshuffle_weight"] = float(self.patchshuffle_weight)
                 loss_acc = loss_acc + loss
+                if bridge_roll_loss is not None:
+                    loss_dict["aug/bridge_roll_weight"] = float(self.bridge_roll_weight)
+                    loss_acc = loss_acc + (self.bridge_roll_weight * bridge_roll_loss)
 
         # 3) Anchor CLS (proj/bottleneck space)
         if self.anchor_cls_weight > 0.0:

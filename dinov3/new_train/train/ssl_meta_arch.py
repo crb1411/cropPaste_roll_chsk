@@ -5,6 +5,7 @@
 
 import gc
 import logging
+from typing import Mapping, Optional
 from functools import partial
 
 import torch
@@ -24,6 +25,7 @@ from dinov3.models import build_model_from_cfg
 from dinov3.train.cosine_lr_scheduler import linear_warmup_cosine_decay
 from dinov3.train.param_groups import fuse_params_groups, get_params_groups_with_decay_fsdp
 from dinov3.utils import count_parameters
+from dinov3.new_train.models.inverse_patch import InversePatchEmbeddingMLP
 from dinov3.new_train.utils import get_device
 from dinov3.data.legacy_augment import AugmentSwitch
 
@@ -67,6 +69,11 @@ class SSLMetaArch(nn.Module):
 
         self.embed_dim = embed_dim  # D
         self.dino_out_dim = cfg.dino.head_n_prototypes  # K
+        self.bridge_global_weight = float(OmegaConf.select(cfg, "bridge.global_weight", default=0.0))
+        bridge_hidden_dim = OmegaConf.select(cfg, "bridge.hidden_dim", default=None)
+        self.bridge_patch_mlp = None
+        if self.bridge_global_weight > 0.0:
+            self.bridge_patch_mlp = InversePatchEmbeddingMLP(self.embed_dim, hidden_dim=bridge_hidden_dim)
 
         logger.info("OPTIONS -- DINO")
         logger.info(f"OPTIONS -- DINO -- loss_weight: {cfg.dino.loss_weight}")
@@ -671,6 +678,30 @@ class SSLMetaArch(nn.Module):
 
         return global_out, local_out
 
+    def _loss_bridge_global_from_patches(
+        self,
+        *,
+        student_global: Mapping[str, Tensor],
+        teacher_global: Mapping[str, Tensor],
+        iteration: int = 0,
+        logger_freq: int = 0,
+    ) -> Optional[Tensor]:
+        if self.bridge_patch_mlp is None:
+            return None
+        patch_tokens = student_global.get("patch_pre_head")
+        if patch_tokens is None:
+            return None
+        n_global_crops, B, _, _ = patch_tokens.shape
+        bridge_embed = self.bridge_patch_mlp(patch_tokens.flatten(0, 1))
+        bridge_logits = self.student.dino_head(bridge_embed).unflatten(0, [n_global_crops, B])
+        return self.dino_loss(
+            student_logits=bridge_logits,
+            teacher_probs=teacher_global["cls_centered"],
+            iteration=iteration,
+            logger_freq=logger_freq,
+            logger_loss="bridge_global_loss",
+        )
+
     def compute_losses(
         self,
         *,
@@ -732,6 +763,19 @@ class SSLMetaArch(nn.Module):
         )
         loss_dict["dino_global_crops_loss"] = dino_global_crops_loss
         loss_accumulator += self.dino_loss_weight * dino_global_scale * dino_global_crops_loss
+
+        # Bridge global loss: patch tokens -> inverse patch -> head vs teacher global CLS targets
+        if self.bridge_global_weight > 0.0:
+            bridge_global_loss = self._loss_bridge_global_from_patches(
+                student_global=student_global,
+                teacher_global=teacher_global,
+                iteration=iteration,
+                logger_freq=logger_freq,
+            )
+            if bridge_global_loss is not None:
+                loss_dict["bridge_global_loss"] = bridge_global_loss
+                loss_dict["bridge_global_weight"] = float(self.bridge_global_weight)
+                loss_accumulator += self.bridge_global_weight * bridge_global_loss
 
         # Koleo: regularize pre-head CLS tokens of student(global crops)
         koleo_loss = sum(self.koleo_loss(x) for x in student_global["cls_pre_head"]) / n_global_crops

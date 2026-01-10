@@ -29,7 +29,7 @@ dino:
     end: 0.5
     warmup_epochs: 0
   use_history: true
-  history_cache_size: 87000
+  history_cache_size: 120000
 ibot:
   loss_weight: 1.0
   mask_sample_probability: 0.5
@@ -45,7 +45,7 @@ ibot:
   head_nlayers: 3
   head_hidden_dim: 2048
   use_history: true
-  history_cache_size: 87000
+  history_cache_size: 120000
 gram:
   use_loss: false # (bool) if true gram is used, else not
   compute_stats: false # (bool): if true compute auxilliary stats
@@ -131,7 +131,7 @@ hrft:  # non-hrft'd student
   enabled: false
   checkpoint_path: ""  # teacher_checkpoint path
 optim:
-  epochs: 800
+  epochs: 1200
   optimizer: adamw
   weight_decay: 0.04
   weight_decay_end: 0.4
@@ -186,8 +186,8 @@ checkpointing:
 schedules:
   lr:
     start: 0
-    peak: 3.0e-05
-    end: 6.0e-07
+    peak: 1.0e-04
+    end: 9.0e-07
     warmup_epochs: 0
     freeze_last_layer_epochs: 0
   weight_decay:
@@ -216,6 +216,7 @@ legacy_augmentor:
     patch_shuffle_patch_min_max:
     - 0.1
     - 0.5
+    bridge_roll_weight: 0.5            # bridge loss on roll (patch -> inverse -> head)
     color_anchor_loss_weight: 0.1      # anchor on CLS bottleneck
     color_anchor_loss_type: cosine
     anchor_patch_loss_weight: 0.0      # anchor on uncovered bg patches
@@ -228,6 +229,9 @@ legacy_augmentor:
     anchor_cls_weight: 0.0
     anchor_bg_patch_weight: 0.0
     save_debug_dir: null
+bridge:
+  global_weight: 0.5                   # bridge loss on global patches
+  hidden_dim: null                     # optional hidden dim for InversePatchEmbeddingMLP
 chsk:
   boost_alpha: 0.4
   boost_w_max: 50.0
