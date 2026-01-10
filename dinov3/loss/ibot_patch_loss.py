@@ -14,6 +14,7 @@ from torch import nn
 # from .dino_cls_loss_cache_global import ProtoQueue
 from dinov3.distributed import get_process_subgroup, get_subgroup_size
 from dinov3.loss.ch_sk import CH_SK
+from dinov3.loss.dtch_sk import DTCH_SK
 logger = logging.getLogger("dinov3")
 
 
@@ -218,7 +219,7 @@ class iBOTPatchLoss(nn.Module):
         # self.sinkhorn_knopp_teacher.compile()
         if use_history:
             logger.info(f"__init__ ibotloss, use history: history_cache_size: {history_cache_size}")
-            self.sinkhorn_knopp_teacher = CH_SK(K=patch_out_dim, history_cache_size=history_cache_size)
+            self.sinkhorn_knopp_teacher = DTCH_SK(K=patch_out_dim, history_cache_size=history_cache_size)
         # if use_sk_cache:
         #     pass
             # self.sinkhorn_knopp_teacher = SinkhornKnoppTeacher_cache(K=patch_out_dim, queue_size=cahe_size)

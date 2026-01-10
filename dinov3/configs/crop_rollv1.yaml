@@ -238,3 +238,5 @@ chsk:
   boost_threshold_divisor: 500.0
   boost_eps: 1e-6
   logits_temp_max: 30
+  dt_temp_scale: 5.0
+  dt_exp_power: 5.0

@@ -15,6 +15,7 @@ import time
 from dinov3.distributed import get_process_subgroup, get_subgroup_size
 from dinov3.loss.blance_prototype import PrototypeBalancer
 from dinov3.loss.ch_sk import CH_SK
+from dinov3.loss.dtch_sk import DTCH_SK
 logger = logging.getLogger("dinov3")
 
 class ProtoQueue:
@@ -85,8 +86,8 @@ class DINOLoss_skcache(nn.Module):
         self.use_history = use_history
         self.history_cache_size = history_cache_size
         if use_history:
-            logger.info(f'INIT_INFOdino loss use CH_SK, cache_size: {history_cache_size}')
-            self.sinkhorn_knopp_teacher_ch_sk = CH_SK(K=out_dim, history_cache_size=history_cache_size, cfg=cfg)
+            logger.info(f'INIT_INFOdino loss use DTCH_SK, cache_size: {history_cache_size}')
+            self.sinkhorn_knopp_teacher_ch_sk = DTCH_SK(K=out_dim, history_cache_size=history_cache_size, cfg=cfg)
 
         elif use_sinkhorn_queue:
             self.queue = ProtoQueue(K=out_dim, max_len=sk_cache, device=device, dtype=torch.float32)
