@@ -178,8 +178,6 @@ class CH_SK(nn.Module):
             boost_mask = low_mask
             boost_w = w
 
-            if boost_mask.any():
-                Q_batch[boost_mask, :] *= boost_w[boost_mask, None]
 
         # ===============================
         # logging
@@ -236,6 +234,8 @@ class CH_SK(nn.Module):
                     f"self.history_Q_mean: {self.history_Q.mean().item():.3e}, "
                     f"self.history_Q[:5]: {['%.3e' % v for v in self.history_Q[:5].tolist()]}"
                 )
+        if boost_mask.any():
+            Q_batch[boost_mask, :] *= boost_w[boost_mask, None]
 
         # ===============================
         # SK

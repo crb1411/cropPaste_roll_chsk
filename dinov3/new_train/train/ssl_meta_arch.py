@@ -552,8 +552,8 @@ class SSLMetaArch(nn.Module):
             logger_loss="ibot_patch_global",
         )  # [n_masked_patches, K]
         if logger_freq and iteration % logger_freq*10 == 0:
-            logger.info(f"[CH_SK] [masked_patch_after_head] masked_patch_after_head_max: {masked_patch_after_head.max().item()}, masked_patch_after_head_min: {masked_patch_after_head.min().item()}, masked_patch_after_head_mean: {masked_patch_after_head.mean().item()}, masked_patch_after_head[-1,:5]: {masked_patch_after_head[-1,:5]}")
-            logger.info(f"[CH_SK] [masked_patch_centered] masked_patch_centered_max: {masked_patch_centered.max().item()}, masked_patch_centered_min: {masked_patch_centered.min().item()}, masked_patch_centered_mean: {masked_patch_centered.mean().item()}, masked_patch_centered[-1,:5]: {masked_patch_centered[-1,:5]}")
+            logger.info(f"[CH_SK] [masked_patch_after_head] masked_patch_after_head_max: {masked_patch_after_head.max().item()}, masked_patch_after_head_min: {masked_patch_after_head.min().item()}, masked_patch_after_head_mean: {masked_patch_after_head.mean().item()}, masked_patch_after_head[-1,:5]: {masked_patch_after_head[-1,:5].tolist()}")
+            logger.info(f"[CH_SK] [masked_patch_centered] masked_patch_centered_max: {masked_patch_centered.max().item()}, masked_patch_centered_min: {masked_patch_centered.min().item()}, masked_patch_centered_mean: {masked_patch_centered.mean().item()}, masked_patch_centered[-1,:5]: {masked_patch_centered[-1,:5].tolist()}")
         return {
             "cls_pre_head": cls.unflatten(0, [n_crops, B]),  # [n_crops, B, D]
             "reg_pre_head": reg.unflatten(0, [n_crops, B]),  # [n_crops, B, R, D]
