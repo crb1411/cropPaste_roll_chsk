@@ -149,7 +149,7 @@ def save_index(
                 with open(f'{out_dir}/legacy_aug_png_{k}_info.json', 'w') as f:
                     json.dump(v, f, indent=4, default=json_default)
             else:
-                save_x01_image_safe(v, f'{out_dir}/legacy_aug_png_{k}.png')
+                _save_one(v, f'{out_dir}/legacy_aug_png_{k}.png')
     if 'legacy_aug_resized' in img:
         aug_dic = img['legacy_aug_resized']
         for k, v in aug_dic.items():
@@ -157,7 +157,7 @@ def save_index(
                 with open(f'{out_dir}/legacy_aug_resized_png_{k}_info.json', 'w') as f:
                     json.dump(v, f, indent=4, default=json_default)
             else:
-                save_x01_image_safe(v, f'{out_dir}/legacy_aug_resized_png_{k}.png')
+                _save_one(v, f'{out_dir}/legacy_aug_resized_png_{k}.png')
 
     return out_dir
     

@@ -206,6 +206,9 @@ class DataAugmentationDINO(object):
             self.global_transfo1 = v2.Compose([resize_global, global_transfo1_extra, self.normalize])
             self.global_transfo2 = v2.Compose([resize_global, global_transfo2_extra, self.normalize])
             self.local_transfo = v2.Compose([local_transfo_extra, self.normalize])
+            self.global_transfo1_nonorm = v2.Compose([resize_global, global_transfo1_extra])
+            self.global_transfo2_nonorm = v2.Compose([resize_global, global_transfo2_extra])
+            self.local_transfo_nonorm = v2.Compose([local_transfo_extra])
         else:
             self.global_transfo1 = v2.Compose(
                 [resize_global, color_jittering, global_transfo1_extra, self.normalize]
@@ -214,6 +217,14 @@ class DataAugmentationDINO(object):
                 [resize_global, color_jittering, global_transfo2_extra, self.normalize]
             )
             self.local_transfo = v2.Compose([color_jittering, local_transfo_extra, self.normalize])
+            
+            self.global_transfo1_nonorm = v2.Compose(
+                [resize_global, color_jittering, global_transfo1_extra]
+            )
+            self.global_transfo2_nonorm = v2.Compose(
+                [resize_global, color_jittering, global_transfo2_extra]
+            )
+            self.local_transfo_nonorm = v2.Compose([color_jittering, local_transfo_extra])
 
         self.to_img = v2.ToImage()
     def __call__(self, image):
@@ -282,7 +293,15 @@ class DataAugmentationDINO(object):
         if self._legacy_augmentor is not None:
             try:
                 # 随机选取 img1_base or img2_base 0.7, 0.3 
-                img_ = im1_base if np.random.rand() < 0.7 else im2_base
+                if np.random.rand() < 0.3:
+                    im1_base_, im2_base_ = im2_base, im1_base
+                else:
+                    im1_base_, im2_base_ = (
+                        self.resize_global_post_transf(self.global_transfo1_nonorm(im1_base)), 
+                        self.resize_global_post_transf(self.global_transfo2_nonorm(im2_base))
+                    )
+                    
+                img_ = im1_base_ if np.random.rand() < 0.5 else im2_base_
                 tensor_input_resized = _image_to_tensor01(img_)
                 h, w = v2.functional.get_size(image)
                 if h != self.global_crop_max_size or w != self.global_crop_max_size:
@@ -348,12 +367,16 @@ if __name__ == "__main__":
             size = 224,
             transform=a,
         )
-    # for data_idx in data:
-    #     out_dir = create_dir_time(
-    #             base_dir='/data/work/output_dir/aug_out',
-    #             prefix='aug'                   
-    #         )
-    #     save_index(data_idx, out_dir, prefix='augVis')
+    save_max, save_ = 100, 0
+    for idx, (data_idx, _) in enumerate(data):
+        save_ += 1
+        out_dir = create_dir_time(
+                base_dir='/data/work/output_dir/aug_out_110_2',
+                prefix=f'{idx}_aug'                   
+            )
+        save_index(data_idx, out_dir, prefix='augVis')
+        if save_ > save_max:
+            break
         
     # pass
     dataloader = torch.utils.data.DataLoader(
@@ -366,7 +389,12 @@ if __name__ == "__main__":
         collate_fn=collate_fn,
     )
     from tqdm import tqdm
+    num = 10
+    i = 0
     for data_ in tqdm(dataloader):
+        i += 1
+        if i > num:
+            break
         # print(data_)
         pass
     

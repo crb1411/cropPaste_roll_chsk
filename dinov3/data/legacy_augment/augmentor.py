@@ -23,12 +23,17 @@ from .crop_paste import CropPaste
 class AugmentSwitch:
     use_crop: bool = True
     crop_prob: float = 0.7
+    crop_roll_prob: float = 0.3
+    crop_split_prob: float = 0.5
+    crop_split_count_min: int = 2
+    crop_split_count_max: int = 12
+    crop_split_shuffle_prob: float = 0.3
     use_color: bool = False
     use_shift: bool = True
     use_white: bool = False
     use_black: bool = False
     use_gray: bool = False
-    crop_background_mode: str = "fixed"  # "fixed" or "random"
+    crop_background_mode: str = "random"  # "fixed" or "random"
     crop_background_value: float = 1.0 # white
     crop_background_min: float = 0.0
     crop_background_max: float = 1.0
@@ -61,6 +66,10 @@ class Augmentor:
                 resize_scale_w=(0.5, 0.9),
                 crop_scale=(0.7, 1.0),
                 crop_prob=self.sw.crop_prob,
+                roll_prob=self.sw.crop_roll_prob,
+                split_prob=self.sw.crop_split_prob,
+                split_count_range=(self.sw.crop_split_count_min, self.sw.crop_split_count_max),
+                split_shuffle_prob=self.sw.crop_split_shuffle_prob,
                 background=background,
                 tile=16,
                 grid_snap=16,

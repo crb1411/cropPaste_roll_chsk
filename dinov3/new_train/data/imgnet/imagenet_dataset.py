@@ -29,7 +29,8 @@ class ImageNetResizeDataset(Dataset):
         self.image_list_txt = image_list_txt
         self.size = size
         self.return_path = return_path
-        self.transform = transform if transform is not None else T.ToTensor()
+        # self.transform = transform if transform is not None else T.ToTensor()
+        self.transform = transform
         self._paths = None
 
     def _load_paths(self) -> list[str]:
@@ -59,7 +60,7 @@ class ImageNetResizeDataset(Dataset):
         img_path = self._paths[idx]
         with Image.open(img_path) as img:
             img = img.convert("RGB")
-            img = img.resize((self.size, self.size), resample=_RESAMPLE)
+            # img = img.resize((self.size, self.size), resample=_RESAMPLE)
 
         img = self.transform(img) if self.transform is not None else img
         if self.return_path:
@@ -72,7 +73,9 @@ if __name__ == "__main__":
         index_npy="/data/data/imagenet_1k/data_new/imagenet_1k.npy",
         size=224,
     )
-    print("dataset size:", len(ds))
-    sample, _ = ds[0]
-    if torch.is_tensor(sample):
-        print("sample shape:", tuple(sample.shape))
+    save_max, save_ = 100, 0
+    for idx, (img, _) in enumerate(ds):
+        save_ += 1
+        img.save(f'/mnt/work/output_dir/aug_out_110_2/{idx}.png', format='PNG')
+        if save_ >= save_max:
+            break
