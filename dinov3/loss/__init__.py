@@ -9,3 +9,4 @@ from .dino_cls_loss_cache_global import DINOLoss_skcache
 from .gram_loss import GramLoss
 from .ibot_patch_loss import iBOTPatchLoss
 from .koleo_loss import KoLeoLoss, KoLeoLossDistributed
+from .dtch_sk import DTCH_SK
