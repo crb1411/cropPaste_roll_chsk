@@ -115,62 +115,31 @@ class DTCH_SK(CH_SK):
 
         
         # ===============================
-        # logging
+        # logging (pre-boost focus)
         # ===============================
-        if logger is not None and logger_freq and iteration % logger_freq == 0:
-            loss_tag = f"[{logger_loss}] " if logger_loss else ""
+        do_log = logger is not None and logger_freq and iteration % logger_freq == 0
+        hist_snapshot = None
+        loss_tag = f"[{logger_loss}] " if logger_loss else ""
+        if do_log:
             with torch.no_grad():
-                if boost_mask.any():
-                    boost_idx = torch.nonzero(boost_mask, as_tuple=False).flatten()
-                    show_n = min(30, boost_idx.numel())
-                    boost_hist = hist[boost_idx]
-                    show_idx = boost_idx[torch.argsort(boost_hist)[:show_n]]
-
-                    logger.info(
-                        f"{loss_tag}[CHSK-BOOST][iter={iteration}] "
-                        f"alpha={alpha:.3g} w_max={w_max:.3g} divisor={divisor:.3g} | "
-                        f"boost_cnt={boost_idx.numel()} | "
-                        f"mean=%.3e thr=%.3e | "
-                        f"idx(head)={show_idx.tolist()} | "
-                        f"hist(head)={['%.3e' % v for v in hist[show_idx].tolist()]} | "
-                        f"w(head)={['%.3e' % v for v in boost_w[show_idx].tolist()]}"
-                        % (mean_hist.item(), threshold.item())
-                    )
-                else:
-                    logger.info(
-                        f"{loss_tag}[CHSK-BOOST][iter={iteration}] no boost | "
-                        f"alpha={alpha:.3g} w_max={w_max:.3g} divisor={divisor:.3g} | "
-                        f"min_hist=%.3e mean=%.3e thr=%.3e"
-                        % (hist.min().item(), mean_hist.item(), threshold.item())
-                    )
-
+                hist_snapshot = self.history_Q.detach()
+                boost_cnt = int(boost_mask.sum().item())
                 logger.info(
-                    f"{loss_tag}iteration {iteration}, logits_temp: max {logits_temp[-1].max().item():.3e}, "
-                    f"min {logits_temp[-1].min().item():.3e}, mean {logits_temp[-1].mean().item():.3e}, "
-                    f"(-1, :5){['%.3e' % v for v in logits_temp[-1, :5].tolist()]}"
+                    f"{loss_tag}[CHSK-BOOST][iter={iteration}] "
+                    f"alpha={alpha:.3g} w_max={w_max:.3g} divisor={divisor:.3g} | "
+                    f"boost_cnt={boost_cnt} | "
+                    f"mean=%.3e thr=%.3e"
+                    % (mean_hist.item(), threshold.item())
                 )
+                hist_flat = hist_snapshot.flatten()
+                k_hist = min(5, hist_flat.numel())
+                hist_top = torch.topk(hist_flat, k_hist).values
+                hist_bottom = torch.topk(-hist_flat, k_hist).values.neg()
                 logger.info(
-                    f"{loss_tag}iteration {iteration}, logits_temp_clamp: max {logits_temp_clamp[-1].max().item():.3e}, "
-                    f"min {logits_temp_clamp[-1].min().item():.3e}, mean {logits_temp_clamp[-1].mean().item():.3e}, "
-                    f"(-1, :5){['%.3e' % v for v in logits_temp_clamp[-1, :5].tolist()]}"
-                )
-                logger.info(
-                    f"{loss_tag}iteration {iteration}, "
-                    f"Q_batch_max: {Q_batch.t()[-1].max().item():.3e}, "
-                    f"Q_batch_min: {Q_batch.t()[-1].min().item():.3e}, "
-                    f"Q_batch_mean: {Q_batch.t()[-1].mean().item():.3e}, "
-                    f"Q_batch[-1, :5]: {['%.3e' % v for v in Q_batch.t()[-1, :5].tolist()]}"
-                )
-                logger.info(
-                    f"{loss_tag}Q_batch_soft_max: {Q_batch_soft.t()[-1].max().item():.3e}, "
-                    f"Q_batch_soft_min: {Q_batch_soft.t()[-1].min().item():.3e}, "
-                    f"Q_batch_soft_mean: {Q_batch_soft.t()[-1].mean().item():.3e}"
-                )
-                logger.info(
-                    f"self.history_Q_max: {self.history_Q.max().item():.3e}, "
-                    f"self.history_Q_min: {self.history_Q.min().item():.3e}, "
-                    f"self.history_Q_mean: {self.history_Q.mean().item():.3e}, "
-                    f"self.history_Q[:5]: {['%.3e' % v for v in self.history_Q[:5].tolist()]}"
+                    f"{loss_tag}history: mean=%.3e max=%.3e min=%.3e | "
+                    f"top5={['%.3e' % v for v in hist_top.tolist()]} | "
+                    f"bottom5={['%.3e' % v for v in hist_bottom.tolist()]}"
+                    % (hist_snapshot.mean().item(), hist_snapshot.max().item(), hist_snapshot.min().item())
                 )
 
         if boost_mask.any():
@@ -212,5 +181,28 @@ class DTCH_SK(CH_SK):
             Q_assign = torch.pow(Q_assign, exp_power)
             denom = Q_assign.sum(dim=1, keepdim=True)
             Q_assign = Q_assign / denom.clamp_min(1e-25)
+
+        if do_log:
+            with torch.no_grad():
+                q_soft_row = Q_batch_soft[:, -1]
+                k_soft = min(5, q_soft_row.numel())
+                q_soft_top = torch.topk(q_soft_row, k_soft).values
+                q_soft_bottom = torch.topk(-q_soft_row, k_soft).values.neg()
+                logger.info(
+                    f"{loss_tag}Q_soft(pre-boost): max=%.3e min=%.3e | "
+                    f"top5={['%.3e' % v for v in q_soft_top.tolist()]} | "
+                    f"bottom5={['%.3e' % v for v in q_soft_bottom.tolist()]}"
+                    % (q_soft_row.max().item(), q_soft_row.min().item())
+                )
+                q_assign_row = Q_assign[-1]
+                k_assign = min(5, q_assign_row.numel())
+                q_assign_top = torch.topk(q_assign_row, k_assign).values
+                q_assign_bottom = torch.topk(-q_assign_row, k_assign).values.neg()
+                logger.info(
+                    f"{loss_tag}Q_assign: max=%.3e min=%.3e | "
+                    f"top5={['%.3e' % v for v in q_assign_top.tolist()]} | "
+                    f"bottom5={['%.3e' % v for v in q_assign_bottom.tolist()]}"
+                    % (q_assign_row.max().item(), q_assign_row.min().item())
+                )
 
         return Q_assign
