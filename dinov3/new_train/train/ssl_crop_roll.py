@@ -152,6 +152,7 @@ class SSLAugmentedCropRoll(SSLMetaArch):
         self.patchshuffle_cls_weight = float(
             _sel("legacy_augmentor.patch_shuffle_cls_weight", _sel("legacy_augmentor.patchshuffle_cls_weight", 1.0))
         )
+        self.use_all_shift_mask = bool(_sel("legacy_augmentor.use_all_shift_mask", False))
         self.patchshuffle_temp = float(_sel("legacy_augmentor.patch_shuffle_temp", 0.1))
         self.patchshuffle_out_dim = int(_sel("legacy_augmentor.patchshuffle_out_dim", cfg.ibot.head_n_prototypes))
         patch_prob = OmegaConf.select(cfg, "legacy_augmentor.patch_shuffle_patch_probability")
@@ -203,9 +204,15 @@ class SSLAugmentedCropRoll(SSLMetaArch):
         self.patch_size = int(_sel("legacy_augmentor.patch_size", cfg.student.patch_size))
         self.bg_tile = int(_sel("legacy_augmentor.bg_tile", 16))
 
-        if self.bridge_roll_weight > 0.0 and self.bridge_patch_mlp is None:
-            bridge_hidden_dim = OmegaConf.select(cfg, "bridge.hidden_dim", default=None)
-            self.bridge_patch_mlp = InversePatchEmbeddingMLP(self.embed_dim, hidden_dim=bridge_hidden_dim)
+        if self.bridge_roll_weight > 0.0:
+            if "bridge_patch_mlp" not in self.student:
+                bridge_hidden_dim = OmegaConf.select(cfg, "bridge.hidden_dim", default=None)
+                self.student["bridge_patch_mlp"] = InversePatchEmbeddingMLP(
+                    self.embed_dim, hidden_dim=bridge_hidden_dim
+                )
+                self.teacher['bridge_patch_mlp'] = InversePatchEmbeddingMLP(
+                    self.embed_dim, hidden_dim=bridge_hidden_dim
+                )
         
         dino_use_history = bool(_sel("dino.use_history", False))
         dino_head_cache = bool(_sel("dino.head_cache", False))
@@ -478,6 +485,8 @@ class SSLAugmentedCropRoll(SSLMetaArch):
             return sample_mask
         if exclude_mask.device != sample_mask.device:
             exclude_mask = exclude_mask.to(device=sample_mask.device)
+        if self.use_all_shift_mask:
+            return sample_mask
         return sample_mask & ~exclude_mask
 
     def _build_legacy_teacher_outputs(
@@ -605,9 +614,10 @@ class SSLAugmentedCropRoll(SSLMetaArch):
                     student_patch_tokens_resized = student_shift_resized_out["x_norm_patchtokens"]
                     student_patch_tokens_original = student_shift_original_out["x_norm_patchtokens"]
 
-                    if self.bridge_roll_weight > 0.0 and self.bridge_patch_mlp is not None:
-                        bridge_resized_pre = self.bridge_patch_mlp(student_patch_tokens_resized)
-                        bridge_original_pre = self.bridge_patch_mlp(student_patch_tokens_original)
+                    bridge_mlp = self._get_bridge_patch_mlp()
+                    if self.bridge_roll_weight > 0.0 and bridge_mlp is not None:
+                        bridge_resized_pre = bridge_mlp(student_patch_tokens_resized)
+                        bridge_original_pre = bridge_mlp(student_patch_tokens_original)
                         outputs["bridge_roll_logits_resized"] = self.student.dino_head(bridge_resized_pre)
                         outputs["bridge_roll_logits_original"] = self.student.dino_head(bridge_original_pre)
 

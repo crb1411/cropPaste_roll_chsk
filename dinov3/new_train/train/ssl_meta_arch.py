@@ -71,9 +71,13 @@ class SSLMetaArch(nn.Module):
         self.dino_out_dim = cfg.dino.head_n_prototypes  # K
         self.bridge_global_weight = float(OmegaConf.select(cfg, "bridge.global_weight", default=0.0))
         bridge_hidden_dim = OmegaConf.select(cfg, "bridge.hidden_dim", default=None)
-        self.bridge_patch_mlp = None
         if self.bridge_global_weight > 0.0:
-            self.bridge_patch_mlp = InversePatchEmbeddingMLP(self.embed_dim, hidden_dim=bridge_hidden_dim)
+            student_model_dict["bridge_patch_mlp"] = InversePatchEmbeddingMLP(
+                self.embed_dim, hidden_dim=bridge_hidden_dim
+            )
+            teacher_model_dict["bridge_patch_mlp"] = InversePatchEmbeddingMLP(
+                self.embed_dim, hidden_dim=bridge_hidden_dim
+            )
 
         logger.info("OPTIONS -- DINO")
         logger.info(f"OPTIONS -- DINO -- loss_weight: {cfg.dino.loss_weight}")
@@ -359,6 +363,8 @@ class SSLMetaArch(nn.Module):
         self.student.backbone.init_weights()
         self.student.dino_head.init_weights()
         self.student.ibot_head.init_weights()
+        if "bridge_patch_mlp" in self.student:
+            self.student["bridge_patch_mlp"].reset_parameters()
         self.dino_loss.init_weights()
         self.ibot_patch_loss.init_weights()
         self.model_ema.load_state_dict(self.student.state_dict())
@@ -678,6 +684,11 @@ class SSLMetaArch(nn.Module):
 
         return global_out, local_out
 
+    def _get_bridge_patch_mlp(self) -> Optional[nn.Module]:
+        if isinstance(self.student, nn.ModuleDict) and "bridge_patch_mlp" in self.student:
+            return self.student["bridge_patch_mlp"]
+        return None
+
     def _loss_bridge_global_from_patches(
         self,
         *,
@@ -686,13 +697,14 @@ class SSLMetaArch(nn.Module):
         iteration: int = 0,
         logger_freq: int = 0,
     ) -> Optional[Tensor]:
-        if self.bridge_patch_mlp is None:
+        bridge_mlp = self._get_bridge_patch_mlp()
+        if bridge_mlp is None:
             return None
         patch_tokens = student_global.get("patch_pre_head")
         if patch_tokens is None:
             return None
         n_global_crops, B, _, _ = patch_tokens.shape
-        bridge_embed = self.bridge_patch_mlp(patch_tokens.flatten(0, 1))
+        bridge_embed = bridge_mlp(patch_tokens.flatten(0, 1))
         bridge_logits = self.student.dino_head(bridge_embed).unflatten(0, [n_global_crops, B])
         return self.dino_loss(
             student_logits=bridge_logits,

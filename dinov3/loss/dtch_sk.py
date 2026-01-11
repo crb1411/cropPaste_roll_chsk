@@ -211,6 +211,6 @@ class DTCH_SK(CH_SK):
         if exp_power != 1.0:
             Q_assign = torch.pow(Q_assign, exp_power)
             denom = Q_assign.sum(dim=1, keepdim=True)
-            Q_assign = Q_assign / denom.clamp_min(1e-12)
+            Q_assign = Q_assign / denom.clamp_min(1e-25)
 
         return Q_assign

@@ -544,7 +544,7 @@ def do_train(cfg, model, resume=False):
     start_train_time = time.time()
     end_train_time = time.time()
     all_iteration_time = -1
-    logger_freq = 20
+    logger_freq = 2
     for data in metric_logger.log_every(
         data_loader,
         print_freq=logger_freq,

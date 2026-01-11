@@ -115,7 +115,7 @@ class DataAugmentationDINO(object):
         global_crop_max_size = max(global_crops_size, gram_teacher_crops_size if gram_teacher_crops_size else 0)
         self.global_crop_max_size = global_crop_max_size
         self.resize_legacy_raw = v2.Resize(
-            global_crop_max_size,
+            (global_crop_max_size, global_crop_max_size),
             interpolation=v2.InterpolationMode.BILINEAR,
         )
 

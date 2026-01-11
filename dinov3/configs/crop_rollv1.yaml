@@ -216,6 +216,7 @@ legacy_augmentor:
     patch_shuffle_patch_min_max:
     - 0.1
     - 0.5
+    use_all_shift_mask: true
     bridge_roll_weight: 0.5            # bridge loss on roll (patch -> inverse -> head)
     color_anchor_loss_weight: 0.1      # anchor on CLS bottleneck
     color_anchor_loss_type: cosine

@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-
+from functools import partial
 class InversePatchEmbeddingMLP(nn.Module):
     """
     Input:  x [B, 196, D]
@@ -19,6 +18,17 @@ class InversePatchEmbeddingMLP(nn.Module):
             nn.GELU(),
             nn.Conv2d(hidden_dim, dim, kernel_size=14, padding=0),
         )
+        self.norm = nn.LayerNorm(dim, eps=1e-6)
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        for module in self.net:
+            if isinstance(module, nn.Conv2d):
+                nn.init.kaiming_normal_(module.weight, mode="fan_out", nonlinearity="relu")
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+        if isinstance(self.norm, nn.LayerNorm):
+            self.norm.reset_parameters()
 
     def forward(self, x):
         B, N, D = x.shape
@@ -29,7 +39,10 @@ class InversePatchEmbeddingMLP(nn.Module):
 
         # [B, D, 1, 1]
         g = self.net(x)
+        
 
         # [B, D]
         g = g.squeeze(-1).squeeze(-1)
-        return g
+        
+        g_norm = self.norm(g)
+        return g_norm
