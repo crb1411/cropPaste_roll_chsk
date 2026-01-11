@@ -145,8 +145,6 @@ def ac_compile_parallelize(
         for k in m.keys():
             if k != "backbone":
                 m[k] = fully_shard(m[k], **fsdp_config, reshard_after_forward=True)
-                if device_type ==  torch.device("cuda"):
-                    m[k].set_reduce_scatter_divide_factor(1)
                 continue
             # Backbone - FSDP every block
             blocks = m[k].blocks
@@ -158,7 +156,6 @@ def ac_compile_parallelize(
                     if m is trained_model and dist.get_world_size() % 8 == 0 and dist.get_world_size() > 8:
                         block_reshard = 8
                     blocks[block_id] = fully_shard(block, **fsdp_config, reshard_after_forward=block_reshard)
-                    blocks[block_id].set_reduce_scatter_divide_factor(1)
                 elif device_type ==  torch.device("npu"):
                     blocks[block_id] = fully_shard(block, **fsdp_config, reshard_after_forward=block_reshard)
             prev_block: FSDPState
@@ -166,9 +163,6 @@ def ac_compile_parallelize(
             for prev_block, next_block in zip(blocks, blocks[1:]):
                 prev_block.set_modules_to_forward_prefetch([next_block])
                 next_block.set_modules_to_backward_prefetch([prev_block])
-            if device_type == torch.device('cuda'):
-                fully_shard(m.backbone, **fsdp_config, reshard_after_forward=True).set_reduce_scatter_divide_factor(1)
-            elif device_type == torch.device('npu'):
                 fully_shard(m.backbone, **fsdp_config, reshard_after_forward=True)
             register_fsdp_forward_method(m.backbone, "get_intermediate_layers")
 
