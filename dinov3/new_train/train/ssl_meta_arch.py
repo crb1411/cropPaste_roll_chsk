@@ -19,7 +19,7 @@ from dinov3.checkpointer import init_fsdp_model_from_checkpoint
 from dinov3.configs import get_default_config
 from dinov3.data import DataAugmentationDINO
 from dinov3.fsdp.ac_compile_parallelize import ac_compile_parallelize
-from dinov3.layers.dino_head import DINOHead
+from dinov3.layers.dino_head import DINOHead, frozen_dino_head_forward
 from dinov3.loss import DINOLoss, GramLoss, KoLeoLoss, KoLeoLossDistributed, iBOTPatchLoss, DINOLoss_skcache
 from dinov3.models import build_model_from_cfg
 from dinov3.train.cosine_lr_scheduler import linear_warmup_cosine_decay
@@ -96,6 +96,9 @@ class SSLMetaArch(nn.Module):
         )
         student_model_dict["dino_head"] = dino_head_class()
         teacher_model_dict["dino_head"] = dino_head_class()
+        # if self.bridge_global_weight > 0.0:
+        #     student_model_dict['bridge_head'] = dino_head_class()
+        #     teacher_model_dict['bridge_head'] = dino_head_class()
         if 'head_cache' not in cfg.dino:
             cfg.dino.head_cache = False
         if 'head_blance_prototype' not in cfg.dino:
@@ -705,7 +708,11 @@ class SSLMetaArch(nn.Module):
             return None
         n_global_crops, B, _, _ = patch_tokens.shape
         bridge_embed = bridge_mlp(patch_tokens.flatten(0, 1))
-        bridge_logits = self.student.dino_head(bridge_embed).unflatten(0, [n_global_crops, B])
+        # bridge_logits = self.student.dino_head(bridge_embed).unflatten(0, [n_global_crops, B])
+        bridge_logits = frozen_dino_head_forward(
+            self.student.dino_head,
+            bridge_embed
+        ).unflatten(0, [n_global_crops, B])
         return self.dino_loss(
             student_logits=bridge_logits,
             teacher_probs=teacher_global["cls_centered"],

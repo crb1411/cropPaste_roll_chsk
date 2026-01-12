@@ -65,3 +65,32 @@ def _build_mlp(nlayers, in_dim, bottleneck_dim, hidden_dim=None, use_bn=False, b
             layers.append(nn.GELU())
         layers.append(nn.Linear(hidden_dim, bottleneck_dim, bias=bias))
         return nn.Sequential(*layers)
+    
+from contextlib import contextmanager
+
+@contextmanager
+def freeze_module(module: torch.nn.Module):
+    """
+    临时冻结一个 module 的所有参数：
+    - 保持它们是 DTensor / FSDP 参数
+    - 但不产生梯度
+    """
+    old_flags = []
+    for p in module.parameters():
+        old_flags.append(p.requires_grad)
+        p.requires_grad_(False)
+    try:
+        yield
+    finally:
+        for p, flag in zip(module.parameters(), old_flags):
+            p.requires_grad_(flag)
+
+def frozen_dino_head_forward(head: DINOHead, x):
+    """
+    完全等价于 head(x)，但：
+    - head 参数不更新
+    - x 仍然反传
+    - 100% 兼容 FSDP / DTensor / torch.compile
+    """
+    with freeze_module(head):
+        return head(x)

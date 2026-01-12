@@ -17,6 +17,7 @@ sys.path.append(str(REPO_ROOT))
 
 from dinov3.data.masking import MaskingGenerator
 from dinov3.loss import DINOLoss, DINOLoss_skcache, iBOTPatchLoss
+from dinov3.layers.dino_head import frozen_dino_head_forward
 from dinov3.new_train.models.inverse_patch import InversePatchEmbeddingMLP
 from dinov3.new_train.train.ssl_meta_arch import SSLMetaArch
 from dinov3.new_train.utils import get_device
@@ -618,8 +619,16 @@ class SSLAugmentedCropRoll(SSLMetaArch):
                     if self.bridge_roll_weight > 0.0 and bridge_mlp is not None:
                         bridge_resized_pre = bridge_mlp(student_patch_tokens_resized)
                         bridge_original_pre = bridge_mlp(student_patch_tokens_original)
-                        outputs["bridge_roll_logits_resized"] = self.student.dino_head(bridge_resized_pre)
-                        outputs["bridge_roll_logits_original"] = self.student.dino_head(bridge_original_pre)
+                        # outputs["bridge_roll_logits_resized"] = self.student.dino_head(bridge_resized_pre)
+                        # outputs["bridge_roll_logits_original"] = self.student.dino_head(bridge_original_pre)
+                        outputs['bridge_roll_logits_resized'] = frozen_dino_head_forward(
+                            self.student.dino_head,
+                            bridge_resized_pre,
+                        )
+                        outputs['bridge_roll_logits_original'] = frozen_dino_head_forward(
+                            self.student.dino_head,
+                            bridge_original_pre,
+                        )
 
                     if perm_pair is not None:
                         sample_mask = self._get_patchshuffle_sample_mask(

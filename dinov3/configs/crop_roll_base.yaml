@@ -86,7 +86,7 @@ train:
   sharded_eval_checkpoint: false
   cache_dataset: false
 student:
-  arch: vit_large
+  arch: vit_base
   patch_size: 16
   drop_path_rate: 0.2
   layerscale: 1.0e-05

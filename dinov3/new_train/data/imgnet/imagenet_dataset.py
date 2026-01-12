@@ -19,7 +19,7 @@ except AttributeError:
 class ImageNetResizeDataset(Dataset):
     def __init__(
         self,
-        index_npy: str,
+        index_npy: Optional[str] = None,
         image_list_txt: Optional[str] = None,
         size: int = 224,
         transform: Optional[Callable] = None,

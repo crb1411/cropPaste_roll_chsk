@@ -341,7 +341,7 @@ def build_dataset_from_cfg_wsi(
         )
     elif dataset_type==DatasetType.IMGNET_DATA_2:
         dataset = ImageNetResizeDataset(
-            index_npy='/mnt/data/imagenet_1k/data_new/imagenet_1k.npy',
+            image_list_txt='/root/data/imagenet_1k/data_new/imagenet_1k.txt',
             size = 224,
             transform=get_augmention(cfg),
         )
@@ -544,7 +544,7 @@ def do_train(cfg, model, resume=False):
     start_train_time = time.time()
     end_train_time = time.time()
     all_iteration_time = -1
-    logger_freq = 2
+    logger_freq = 20
     for data in metric_logger.log_every(
         data_loader,
         print_freq=logger_freq,

@@ -26,10 +26,10 @@ class AugmentSwitch:
     crop_roll_prob: float = 0.3
     crop_split_prob: float = 0.5
     crop_split_count_min: int = 2
-    crop_split_count_max: int = 12
-    crop_split_shuffle_prob: float = 0.3
-    use_color: bool = False
+    crop_split_count_max: int = 8
+    crop_split_shuffle_prob: float = 0
     use_shift: bool = True
+    use_color: bool = False
     use_white: bool = False
     use_black: bool = False
     use_gray: bool = False
