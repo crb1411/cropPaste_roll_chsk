@@ -823,11 +823,4 @@ class SSLMetaArch(nn.Module):
             catted = catted.narrow(dim=over_dim, start=0, length=global_batch_size)
 
         return catted.chunk(subgroup_size, dim=over_dim)[distributed.get_subgroup_rank()].clone()
-def _resolve_legacy_augment_switch(cfg):
-    switch_cfg = OmegaConf.select(cfg, "crops.legacy_augmentor_switch")
-    if switch_cfg is None:
-        return None
-    container = OmegaConf.to_container(switch_cfg, resolve=True)
-    if not isinstance(container, dict):
-        return None
-    return AugmentSwitch(**container)
+

@@ -5,15 +5,16 @@
 
 import logging
 import sys
+from pathlib import Path
 import time
 from dataclasses import dataclass, field
 from functools import partial
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import torch
 import torch.backends.cudnn as cudnn
 import torch.distributed
-from omegaconf import MISSING
+from omegaconf import MISSING, OmegaConf
 from torch import nn
 from torch.utils.data import TensorDataset
 from torchmetrics import MetricTracker
@@ -21,7 +22,7 @@ from torchmetrics import MetricTracker
 from dinov3.data import SamplerType, make_data_loader, make_dataset
 from dinov3.data.adapters import DatasetWithEnumeratedTargets
 from dinov3.data.transforms import CROP_DEFAULT_SIZE, get_target_transform, make_classification_eval_transform
-from dinov3.distributed import get_rank, get_world_size
+from dinov3.distributed import get_rank, get_world_size, is_main_process
 from dinov3.eval.data import (
     create_train_dataset_dict,
     extract_features_for_dataset_dict,
@@ -41,6 +42,7 @@ logger = logging.getLogger("dinov3")
 
 RESULTS_FILENAME = "results-log-regression.csv"
 MAIN_METRICS = ["top-1(_mean)?"]
+FEATURE_CACHE_DIRNAME = "feature_cache"
 
 
 try:
@@ -269,10 +271,35 @@ def get_best_logreg_with_features(
     return logreg_model
 
 
-def make_transform(config: TransformConfig):
+def _load_rgb_mean_std(config_file: str | None) -> tuple[Sequence[float] | None, Sequence[float] | None]:
+    if not config_file or config_file == MISSING:
+        return None, None
+    try:
+        cfg = OmegaConf.load(config_file)
+    except Exception as exc:
+        logger.warning("Failed to load config file for rgb mean/std: %s (%s)", config_file, exc)
+        return None, None
+
+    mean = OmegaConf.select(cfg, "crops.rgb_mean")
+    std = OmegaConf.select(cfg, "crops.rgb_std")
+    if mean is None or std is None:
+        logger.warning("Missing crops.rgb_mean/std in config file: %s; using defaults", config_file)
+        return None, None
+    return list(mean), list(std)
+
+
+def make_transform(config: TransformConfig, mean: Sequence[float] | None = None, std: Sequence[float] | None = None):
     if config.resize_size / config.crop_size != 1:
         logger.warning(f"Default resize / crop ratio is 1, here we have {config.resize_size} / {config.crop_size}")
-    transform = make_classification_eval_transform(resize_size=config.resize_size, crop_size=config.crop_size)
+    if mean is None or std is None:
+        transform = make_classification_eval_transform(resize_size=config.resize_size, crop_size=config.crop_size)
+    else:
+        transform = make_classification_eval_transform(
+            resize_size=config.resize_size,
+            crop_size=config.crop_size,
+            mean=mean,
+            std=std,
+        )
     return transform
 
 
@@ -316,6 +343,32 @@ def make_test_dataset_and_data_loader(model, config: EvalConfig, transform, gath
     return test_dataset, test_data_loader
 
 
+def _cache_paths(output_dir: str, name: str, try_n: int | None = None) -> tuple[Path, Path]:
+    cache_dir = Path(output_dir) / FEATURE_CACHE_DIRNAME
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    suffix = f"_try{try_n}" if try_n is not None else ""
+    feat_path = cache_dir / f"{name}_features{suffix}.pt"
+    label_path = cache_dir / f"{name}_labels{suffix}.pt"
+    return feat_path, label_path
+
+
+def _load_cached_features(feat_path: Path, label_path: Path) -> tuple[torch.Tensor, torch.Tensor] | None:
+    if not feat_path.exists() or not label_path.exists():
+        return None
+    features = torch.load(feat_path, map_location="cpu")
+    labels = torch.load(label_path, map_location="cpu")
+    logger.info("Loaded cached features: %s, %s", feat_path, label_path)
+    return features, labels
+
+
+def _save_cached_features(feat_path: Path, label_path: Path, features: torch.Tensor, labels: torch.Tensor) -> None:
+    if not is_main_process():
+        return
+    torch.save(features.cpu(), feat_path)
+    torch.save(labels.cpu(), label_path)
+    logger.info("Saved cached features: %s, %s", feat_path, label_path)
+
+
 def eval_log_regression_with_model(*, model: torch.nn.Module, autocast_dtype, config: LogregEvalConfig):
     """
     Implements the "standard" process for log regression evaluation:
@@ -328,7 +381,10 @@ def eval_log_regression_with_model(*, model: torch.nn.Module, autocast_dtype, co
     start = time.time()
     cudnn.benchmark = True
 
-    transform = make_transform(config.transform)
+    mean, std = _load_rgb_mean_std(config.model.config_file)
+    if mean is not None and std is not None:
+        logger.info("Using rgb mean/std from config file: %s", config.model.config_file)
+    transform = make_transform(config.transform, mean=mean, std=std)
     config.eval.batch_size = config.eval.batch_size or config.train.batch_size  # use train batch size for eval if None
 
     # Setting up train and val datasets
@@ -337,14 +393,46 @@ def eval_log_regression_with_model(*, model: torch.nn.Module, autocast_dtype, co
     # Extracting features
     with torch.autocast("cuda", dtype=autocast_dtype):
         gather_on_cpu = torch.device(config.train.train_features_device) == _CPU_DEVICE
-        train_data_dict = extract_features_for_dataset_dict(
-            model, train_dataset_dict, config.train.batch_size, config.train.num_workers, gather_on_cpu=gather_on_cpu
-        )
+        train_data_dict: dict[int, dict[str, torch.Tensor]] = {}
+        for try_n, dataset in train_dataset_dict.items():
+            train_feat_path, train_label_path = _cache_paths(config.output_dir, "train", try_n)
+            cached = _load_cached_features(train_feat_path, train_label_path)
+            if cached is not None:
+                train_features, train_labels = cached
+            else:
+                train_features, train_labels = extract_features(
+                    model, dataset, config.train.batch_size, config.train.num_workers, gather_on_cpu=gather_on_cpu
+                )
+                _save_cached_features(train_feat_path, train_label_path, train_features, train_labels)
+            train_data_dict[try_n] = {"train_features": train_features, "train_labels": train_labels}
         logger.info("Choosing hyperparameters on the val dataset")
-        val_features, val_labels = extract_features(
-            model, val_dataset, config.train.batch_size, config.train.num_workers, gather_on_cpu=gather_on_cpu
+        val_feat_path, val_label_path = _cache_paths(config.output_dir, "val")
+        cached_val = _load_cached_features(val_feat_path, val_label_path)
+        if cached_val is not None:
+            val_features, val_labels = cached_val
+        else:
+            val_features, val_labels = extract_features(
+                model, val_dataset, config.train.batch_size, config.train.num_workers, gather_on_cpu=gather_on_cpu
+            )
+            _save_cached_features(val_feat_path, val_label_path, val_features, val_labels)
+
+        test_dataset = make_dataset(
+            dataset_str=config.eval.test_dataset,
+            transform=transform,
+            target_transform=get_target_transform(config.eval.test_dataset),
         )
-        test_dataset, test_data_loader = make_test_dataset_and_data_loader(model, config.eval, transform, gather_on_cpu)
+        test_feat_path, test_label_path = _cache_paths(config.output_dir, "test")
+        cached_test = _load_cached_features(test_feat_path, test_label_path)
+        if cached_test is not None:
+            test_features, test_labels = cached_test
+        else:
+            test_features, test_labels = extract_features(
+                model, test_dataset, config.eval.batch_size, config.eval.num_workers, gather_on_cpu=gather_on_cpu
+            )
+            _save_cached_features(test_feat_path, test_label_path, test_features, test_labels)
+        test_data_loader = make_logreg_data_loader(
+            config.eval.batch_size, config.eval.num_workers, test_features, test_labels
+        )
 
     # Moves the model to cpu in-place. Deleting the variable would only delete a reference and not free any space.
     model.cpu()  # all features are extracted, we won't use the backbone anymore

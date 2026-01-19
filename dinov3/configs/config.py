@@ -105,7 +105,10 @@ def setup_config(args: DinoV3SetupArgs, strict_cfg=True):
         write_config(cfg, args.output_dir)
     logger.info(f'Output directory: {args.output_dir}')
     # modify the config inplace by applying scaling rules
-    apply_scaling_rules_to_cfg(cfg)
+    try:
+        apply_scaling_rules_to_cfg(cfg)
+    except Exception as e:
+        logger.info(f'distribute.enable = False, skipping scaling rules: {e}')
     return cfg
 
 
