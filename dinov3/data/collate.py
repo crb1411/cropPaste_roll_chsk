@@ -199,6 +199,34 @@ def collate_data_and_cast(
         out["collated_gram_teacher_crops"] = collated_gram_teacher_crops.to(dtype)
     return out
 
+def _pad_1d_tensors(values, *, pad_value=-1, dtype=None):
+    """Pad variable-length 1D tensors into a [B, max_len] tensor."""
+    if not values:
+        return torch.empty((0, 0), dtype=torch.long)
+    max_len = 0
+    ref = None
+    for v in values:
+        if torch.is_tensor(v):
+            if ref is None:
+                ref = v
+            max_len = max(max_len, int(v.numel()))
+    if dtype is None:
+        dtype = ref.dtype if ref is not None else torch.long
+    device = ref.device if ref is not None else None
+    if device is None:
+        out = torch.full((len(values), max_len), pad_value, dtype=dtype)
+    else:
+        out = torch.full((len(values), max_len), pad_value, dtype=dtype, device=device)
+    for i, v in enumerate(values):
+        if not torch.is_tensor(v):
+            continue
+        flat = v.reshape(-1).to(dtype=dtype, device=out.device)
+        if flat.numel() == 0:
+            continue
+        out[i, : flat.numel()] = flat
+    return out
+
+
 def collate_legacy_aug(samples_list, out, dtype=torch.float32, key_='legacy_aug_resized'):
     """
     samples_list: List[List[sample_dict]]
@@ -238,28 +266,25 @@ def collate_legacy_aug(samples_list, out, dtype=torch.float32, key_='legacy_aug_
         v0 = values[0]
 
         # ---------- tensor augmentation ----------
-        if isinstance(v0, torch.Tensor):
+        if torch.is_tensor(v0):
             # expect all tensors same shape
-            legacy_aug_batch[key] = torch.stack(
-                [v.to(dtype) for v in values], dim=0
-            )
+            legacy_aug_batch[key] = torch.stack([v.to(dtype) for v in values], dim=0)
             continue
 
-        # ---------- info: dict / list / numeric / tensor ----------
-        # info 不能直接 stack，需要逐元素处理
-        # 简化方案：保持 list 结构，后续用户自己解析
-        if isinstance(v0, (dict, list, tuple, int, float, str)):
-            legacy_aug_batch[key] = values
-            continue
-
-        # ---------- info 是 tensor 的情况 ----------
-        if isinstance(v0, torch.Tensor):
-            legacy_aug_batch[key] = torch.stack(values, dim=0)
-            continue
+        # ---------- info dicts -> tensors ----------
+        if isinstance(v0, dict) and key.endswith("_info"):
+            if key == "shift_info":
+                perm_idx = [v.get("perm_idx") if isinstance(v, dict) else None for v in values]
+                legacy_aug_batch[key] = _pad_1d_tensors(perm_idx, pad_value=-1, dtype=torch.long)
+                continue
+            if key == "cropPaste_info":
+                uncovered = [v.get("uncovered_idx") if isinstance(v, dict) else None for v in values]
+                legacy_aug_batch[key] = _pad_1d_tensors(uncovered, pad_value=-1, dtype=torch.long)
+                continue
 
         # ---------- fallback ----------
-        # 其他类型（如 None），直接存 list
-        legacy_aug_batch[key] = values
+        # Unknown legacy info types: keep tensor-only contract with an empty placeholder.
+        legacy_aug_batch[key] = torch.empty((len(values), 0), dtype=torch.long)
 
     out[key_] = legacy_aug_batch
 

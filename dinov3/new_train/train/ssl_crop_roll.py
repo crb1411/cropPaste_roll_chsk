@@ -21,6 +21,7 @@ from dinov3.layers.dino_head import frozen_dino_head_forward
 from dinov3.new_train.models.inverse_patch import InversePatchEmbeddingMLP
 from dinov3.new_train.train.ssl_meta_arch import SSLMetaArch
 from dinov3.new_train.utils import get_device
+from dinov3.new_train.loss import SharpnessLoss
 logger = logging.getLogger("dinov3")
 
 
@@ -118,14 +119,14 @@ class SSLAugmentedCropRoll(SSLMetaArch):
     2) PatchShuffle/Roll loss:
        - iBOT-style patch logits soft-CE, requires perm_idx from shift_info
        - uses legacy_aug_resized["shift"] and legacy_aug["shift"]
-       - shift_info is list[dict] (collate keeps info as list), each dict has "perm_idx"
+       - shift_info is a [B, N] tensor (perm_idx), padded with -1 if needed
 
     3) Anchor loss (TODO):
        - run in bottleneck space (e.g. 256 dim)
        - we DO NOT have head bottleneck activations exposed, so we add a small projection:
          anchor_proj: Linear(embed_dim -> bottleneck_dim)
        - anchor on CLS (always optional)
-       - weak anchor on background patches from cropPaste_info["uncovered_idx"] (optional)
+       - weak anchor on background patches from cropPaste_info (padded idx tensor) (optional)
     """
 
     def __init__(self, cfg):
@@ -272,6 +273,12 @@ class SSLAugmentedCropRoll(SSLMetaArch):
             self.patchshuffle_patch_loss = iBOTPatchLoss(self.patchshuffle_out_dim, use_sk_cache=False)
             self.patchshuffle_patch_loss_resized = iBOTPatchLoss(self.patchshuffle_out_dim, use_sk_cache=False)
         
+        # sharpen_loss
+        # self.sharpen_head_weight = _sel("sharpen_head_weight", 0.0)
+        # if self.sharpen_head_weight > 0.0:
+        #     self.sharpen_loss = SharpnessLoss(
+        #         H_target=0
+        #     )
         
         self._batch_meta = {}
         self._patchshuffle_mask_generator: Optional[MaskingGenerator] = None
@@ -280,7 +287,8 @@ class SSLAugmentedCropRoll(SSLMetaArch):
         
         # ---- K-dim soft anchor (head space) ----
         self.anchor_k_weight = float(_sel("legacy_augmentor.anchor_k_weight", 0.0))
-        self.anchor_k_alpha = float(_sel("legacy_augmentor.anchor_k_alpha", 0.3))
+        self.anchor_k_alpha = float(_sel("legacy_augmentor.anchor_k_alpha", 0.0))
+        
 
     # ------------------------------------------------------------
     # forward_backward override: cache + move legacy_aug to cuda
@@ -290,7 +298,7 @@ class SSLAugmentedCropRoll(SSLMetaArch):
         self._batch_meta = getattr(self, "_batch_meta", {})
         self._legacy_outputs = {}
 
-        # move legacy aug dicts (including tensors nested inside info list[dict]) to cuda
+        # move legacy aug dicts (tensor values, including padded info tensors) to cuda
         if "legacy_aug_resized" in data and isinstance(data["legacy_aug_resized"], dict):
             data["legacy_aug_resized"] = _to_device_any(
                 data["legacy_aug_resized"], device=self.device, non_blocking=True
@@ -308,11 +316,13 @@ class SSLAugmentedCropRoll(SSLMetaArch):
     # augmented loss pieces
     # ------------------------------------------------------------
     @torch.no_grad()
-    def _stack_info_field(self, info_list: list, field: str) -> Optional[Tensor]:
+    def _stack_info_field(self, info_list, field: str) -> Optional[Tensor]:
         """
-        info_list: list[dict] length B (your collate keeps info as list)
+        info_list: list[dict] length B or a [B, ...] tensor
         returns stacked tensor [B, ...] or None
         """
+        if torch.is_tensor(info_list):
+            return info_list if info_list.numel() > 0 else None
         if not isinstance(info_list, list) or len(info_list) == 0:
             return None
         v0 = info_list[0]
@@ -366,9 +376,19 @@ class SSLAugmentedCropRoll(SSLMetaArch):
     ) -> Optional[Tuple[Tensor, Tensor]]:
         if "shift_info" not in legacy_r or "shift_info" not in legacy_o:
             return None
-        perm_idx_r = self._stack_info_field(legacy_r["shift_info"], "perm_idx")
-        perm_idx_o = self._stack_info_field(legacy_o["shift_info"], "perm_idx")
+        shift_r = legacy_r["shift_info"]
+        shift_o = legacy_o["shift_info"]
+        if torch.is_tensor(shift_r) and torch.is_tensor(shift_o):
+            perm_idx_r = shift_r
+            perm_idx_o = shift_o
+        else:
+            perm_idx_r = self._stack_info_field(shift_r, "perm_idx")
+            perm_idx_o = self._stack_info_field(shift_o, "perm_idx")
         if perm_idx_r is None or perm_idx_o is None:
+            return None
+        if perm_idx_r.numel() == 0 or perm_idx_o.numel() == 0:
+            return None
+        if (perm_idx_r < 0).any() or (perm_idx_o < 0).any():
             return None
         expected_b = self._batch_meta.get("B")
         if expected_b is not None:
@@ -726,15 +746,19 @@ class SSLAugmentedCropRoll(SSLMetaArch):
             student_global["legacy_aug"] = student_legacy
         return student_global, student_local
 
-    def _build_bg_mask_from_uncovered_idx(self, uncovered_list: list, *, H: int, W: int, device) -> Optional[Tensor]:
+    def _build_bg_mask_from_uncovered_idx(self, uncovered_list, *, H: int, W: int, device) -> Optional[Tensor]:
         """
-        uncovered_list: list[tensor] length B, each tensor: [Mi] uncovered tile indices (linear over R*Cc)
+        uncovered_list: list[tensor] length B OR padded [B, M] tensor (-1 padding)
+          each tensor holds uncovered tile indices (linear over R*Cc)
         returns bg_mask: [B, N] bool mask over patch tokens order (N = (H/ps)*(W/ps))
         Assumptions:
           - CropPaste.tile == patch_size (16) OR at least same grid as patch tokens.
           - patch tokens order is row-major over (H/ps, W/ps)
         """
-        if not isinstance(uncovered_list, list) or len(uncovered_list) == 0:
+        if torch.is_tensor(uncovered_list):
+            if uncovered_list.dim() != 2:
+                return None
+        elif not isinstance(uncovered_list, list) or len(uncovered_list) == 0:
             return None
         # Use tile grid (your CropPaste uses tile=t, default 16)
         t = self.bg_tile
@@ -743,15 +767,27 @@ class SSLAugmentedCropRoll(SSLMetaArch):
         if R <= 0 or C <= 0:
             return None
         N = R * C
-        bg = torch.zeros((len(uncovered_list), N), dtype=torch.bool, device=device)
-        for i, idx in enumerate(uncovered_list):
-            if not torch.is_tensor(idx):
-                continue
-            idx = idx.to(device=device)
+        if torch.is_tensor(uncovered_list):
+            idx = uncovered_list.to(device=device)
+            bg = torch.zeros((idx.shape[0], N), dtype=torch.bool, device=device)
             if idx.numel() == 0:
-                continue
+                return bg
+            valid = idx >= 0
+            if not valid.any():
+                return bg
             idx = idx.clamp(min=0, max=N - 1).long()
-            bg[i, idx] = True
+            b_idx = torch.arange(idx.shape[0], device=device).unsqueeze(1).expand_as(idx)
+            bg[b_idx[valid], idx[valid]] = True
+        else:
+            bg = torch.zeros((len(uncovered_list), N), dtype=torch.bool, device=device)
+            for i, idx in enumerate(uncovered_list):
+                if not torch.is_tensor(idx):
+                    continue
+                idx = idx.to(device=device)
+                if idx.numel() == 0:
+                    continue
+                idx = idx.clamp(min=0, max=N - 1).long()
+                bg[i, idx] = True
         return bg
 
     def _loss_cropresize_ce_from_legacy(
@@ -957,27 +993,36 @@ class SSLAugmentedCropRoll(SSLMetaArch):
         global_crops: Tensor,  # [2B,3,H,W] in forward_backward parent
     ) -> Optional[Tensor]:
         expected_b = self._batch_meta.get("B")
-        # Need cropPaste_info["uncovered_idx"] list[tensor] length B
+        # Need cropPaste_info uncovered_idx for each sample
         if "cropPaste_info" not in legacy_o:
             return None
-        info_list = legacy_o["cropPaste_info"]  # list[dict]
-        if not isinstance(info_list, list) or len(info_list) == 0:
-            return None
-        if expected_b is not None and len(info_list) != expected_b:
-            logger.warning("cropPaste_info length mismatch: %s vs expected %s", len(info_list), expected_b)
-            return None
+        info_val = legacy_o["cropPaste_info"]
+        if torch.is_tensor(info_val):
+            if info_val.dim() != 2:
+                return None
+            if expected_b is not None and info_val.shape[0] != expected_b:
+                logger.warning("cropPaste_info batch mismatch: %s vs expected %s", info_val.shape, expected_b)
+                return None
+            uncovered = info_val
+        else:
+            info_list = info_val  # list[dict]
+            if not isinstance(info_list, list) or len(info_list) == 0:
+                return None
+            if expected_b is not None and len(info_list) != expected_b:
+                logger.warning("cropPaste_info length mismatch: %s vs expected %s", len(info_list), expected_b)
+                return None
 
-        # extract uncovered_idx list (variable length per sample)
-        uncovered = []
-        for d in info_list:
-            if not isinstance(d, dict) or "uncovered_idx" not in d:
-                uncovered.append(torch.zeros((0,), dtype=torch.long, device=global_crops.device))
-                continue
-            u = d["uncovered_idx"]
-            if torch.is_tensor(u):
-                uncovered.append(u)
-            else:
-                uncovered.append(torch.zeros((0,), dtype=torch.long, device=global_crops.device))
+            # extract uncovered_idx list (variable length per sample)
+            uncovered = []
+            for d in info_list:
+                if not isinstance(d, dict) or "uncovered_idx" not in d:
+                    uncovered.append(torch.zeros((0,), dtype=torch.long, device=global_crops.device))
+                    continue
+                u = d["uncovered_idx"]
+                if torch.is_tensor(u):
+                    uncovered.append(u)
+                else:
+                    uncovered.append(torch.zeros((0,), dtype=torch.long, device=global_crops.device))
 
         # infer H,W from cropPaste tensor if exists, else from global_crops
         if "cropPaste" in legacy_o and torch.is_tensor(legacy_o["cropPaste"]):
@@ -1091,6 +1136,26 @@ class SSLAugmentedCropRoll(SSLMetaArch):
                 if bridge_roll_loss is not None:
                     loss_dict["aug/bridge_roll_weight"] = float(self.bridge_roll_weight)
                     loss_acc = loss_acc + (self.bridge_roll_weight * bridge_roll_loss)
+        # sharpen_loss
+        if self.sharpen_head_weight > 0.0:
+            self.sharpen_data = getattr(self, "sharpen_data", {}) or {}
+            self.sharpen_data.update({
+                "aug/patchshuffle_patch_logits_resized": legacy_student.get('patchshuffle_patch_logits_resized', None),
+                "aug/patchshuffle_patch_logits_original": legacy_student.get('patchshuffle_patch_logits_original', None),
+                "aug/patchshuffle_cls_logits_resized": legacy_student.get('patchshuffle_cls_logits_resized', None),
+                "aug/patchshuffle_cls_logits_original": legacy_student.get('patchshuffle_cls_logits_original', None),
+                "aug/cropresize_cls_logits_resized": legacy_student.get('cropresize_cls_logits_resized', None),
+                "aug/cropresize_cls_logits_original": legacy_student.get('cropresize_cls_logits_original', None),
+                "aug/bridge_roll_logits_resized": legacy_student.get('bridge_roll_logits_resized', None),
+                "aug/bridge_roll_logits_original": legacy_student.get('bridge_roll_logits_original', None),
+            })
+            sharpen_head_loss = self.sharpen_loss(
+                    sharpen_data=self.sharpen_data,
+                    iteration=iteration,
+                    logger_freq=logger_freq,
+                    logger_loss="sharpen_head_loss",
+                )
+            
 
         # 3) Anchor CLS (proj/bottleneck space)
         if self.anchor_cls_weight > 0.0:
@@ -1151,103 +1216,3 @@ class SSLAugmentedCropRoll(SSLMetaArch):
             y = y.unsqueeze(0).expand_as(logits)  # [M, K]
 
         return _soft_ce(logits, y)
-    
-    
-
-
-
-# ------------------------------------------------------------
-# Small smoke test using png_dataset from data/augmentations.py
-# ------------------------------------------------------------
-def _smoke_test_png_dataset():
-    """
-    Lightweight test:
-      - load default config
-      - build DataAugmentationDINO + png_dataset
-      - run one forward_backward pass on CPU
-    Requires resize_2/data/dataset.py with png_dataset available.
-    """
-    from functools import partial
-    from pathlib import Path
-
-    import torch
-    from torch.utils.data import DataLoader
-    from omegaconf import OmegaConf
-
-    from dinov3.data.augmentations import DataAugmentationDINO
-    from dinov3.data import collate_data_and_cast, MaskingGenerator
-
-    cfg = OmegaConf.load(Path(__file__).resolve().parents[1] / "configs" / "ssl_default_config.yaml")
-
-    # transforms / dataset
-    aug = DataAugmentationDINO(
-        cfg.crops.global_crops_scale,
-        cfg.crops.local_crops_scale,
-        cfg.crops.local_crops_number,
-        global_crops_size=cfg.crops.global_crops_size,
-        local_crops_size=cfg.crops.local_crops_size,
-        gram_teacher_crops_size=cfg.crops.gram_teacher_crops_size,
-        gram_teacher_no_distortions=cfg.crops.gram_teacher_no_distortions,
-        local_crops_subset_of_global_crops=cfg.crops.localcrops_subset_of_globalcrops,
-        share_color_jitter=cfg.crops.share_color_jitter,
-        horizontal_flips=cfg.crops.horizontal_flips,
-        mean=cfg.crops.rgb_mean,
-        std=cfg.crops.rgb_std,
-        use_legacy_augmentor=True,
-        legacy_augmentor_switch=None,
-    )
-
-    # mask generator + collate
-    n_tokens = (cfg.crops.global_crops_size // cfg.student.patch_size) ** 2
-    mask_generator = MaskingGenerator(
-        input_size=(cfg.crops.global_crops_size // cfg.student.patch_size,) * 2,
-        max_num_patches=0.5 * n_tokens,
-    )
-    collate_fn = partial(
-        collate_data_and_cast,
-        mask_ratio_tuple=cfg.ibot.mask_ratio_min_max,
-        mask_probability=cfg.ibot.mask_sample_probability,
-        dtype={
-            "fp32": torch.float32,
-            "fp16": torch.float16,
-            "bf16": torch.bfloat16,
-        }[cfg.compute_precision.param_dtype],
-        n_tokens=n_tokens,
-        mask_generator=mask_generator,
-        random_circular_shift=cfg.ibot.mask_random_circular_shift,
-        local_batch_size=None,
-    )
-
-    # dataset is defined in resize_2/data/dataset.py
-    import sys
-    sys.path.append(str(REPO_ROOT.parent / "resize_2"))
-    from data.dataset import (
-        png_dataset
-    )
-    from data.dataset import png_dataset  # noqa: WPS433
-    batch_size = 4
-    loader = DataLoader(
-        png_dataset(img_transforms=aug),
-        batch_size=batch_size,
-        num_workers=0,
-        pin_memory=False,
-        drop_last=True,
-        collate_fn=collate_fn,
-    )
-    return loader, cfg
-
-def _smoke_test_train():
-    loader, cfg = _smoke_test_png_dataset()
-    batch = next(iter(loader))
-
-    model = SSLAugmentedCropRoll(cfg)
-    model.train()
-    batch['global_batch_size'] = 4
-    loss, logs = model.forward_backward(batch, teacher_temp=0.059, iteration=0)
-    print("smoke loss:", loss)
-    for k, v in logs.items():
-        print(k, v)
-
-
-if __name__ == "__main__":
-    _smoke_test_train()

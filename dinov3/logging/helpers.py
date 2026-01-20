@@ -37,7 +37,7 @@ def _get_memory_stats(device_type: str) -> dict[str, float] | None:
 
 
 class MetricLogger(object):
-    def __init__(self, delimiter="\t", output_file=None, debug=True):
+    def __init__(self, delimiter="\t", output_file=None, debug=False):
         self.meters = defaultdict(SmoothedValue)
         self.delimiter = delimiter
         self.output_file = output_file
@@ -117,7 +117,10 @@ class MetricLogger(object):
             if i >= n_iterations:
                 break
             if self.debug:
-                logger.info(f'load first data sucess: data.keys() = {obj.keys()}')
+                if hasattr(obj, "keys"):
+                    logger.info(f"load first data sucess: data.keys() = {list(obj.keys())}")
+                else:
+                    logger.info(f"load first data sucess: data.type = {type(obj)}")
                 self.debug = False
 
             data_time.update(time.time() - end)

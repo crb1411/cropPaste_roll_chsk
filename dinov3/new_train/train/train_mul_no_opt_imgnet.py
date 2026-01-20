@@ -11,6 +11,7 @@ from functools import partial
 from pathlib import Path
 
 import torch
+from omegaconf import OmegaConf
 
 import torch.distributed
 from torch.distributed._tensor import DTensor
@@ -47,6 +48,7 @@ from dinov3.data import (
     _make_sampler,
     CombinedDataLoader,
 )
+from dinov3.data.legacy_augment import AugmentSwitch
 from dinov3.logging import MetricLogger, setup_logging
 from dinov3.train.cosine_lr_scheduler import CosineScheduler, linear_warmup_cosine_decay
 from dinov3.train.multidist_meta_arch import MultiDistillationMetaArch
@@ -57,11 +59,11 @@ import traceback
 
 logger = logging.getLogger("dinov3")
 
-try:
-    # Avoid /dev/shm limitations when multiprocessing DataLoader workers share tensors.
-    mp.set_sharing_strategy("file_system")
-except RuntimeError:
-    pass
+# try:
+#     # Avoid /dev/shm limitations when multiprocessing DataLoader workers share tensors.
+#     mp.set_sharing_strategy("file_system")
+# except RuntimeError:
+#     pass
 
 assert torch.__version__ >= (2, 1)
 try:
@@ -350,7 +352,7 @@ def build_dataset_from_cfg_wsi(
             index_npy="/mnt/local09/train/crb/data/img_data_v1212/patch_index.npy",
             image_list_txt="/mnt/local09/train/crb/data/img_data_v1212/patch_index.txt",
             patch_size=224,
-            pad_value=0,
+            pad_value=255,
             transform=get_augmention(cfg),
         )
     elif dataset_type==DatasetType.NPY_DATA:

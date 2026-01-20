@@ -74,6 +74,8 @@ class DataAugmentationDINO(object):
         use_legacy_augmentor: bool = False,
         legacy_augmentor_switch: Optional[AugmentSwitch] = None,
     ):
+        self.use_legacy_augmentor = use_legacy_augmentor
+        self.legacy_augmentor_switch = legacy_augmentor_switch
         self.global_crops_scale = global_crops_scale
         self.local_crops_scale = local_crops_scale
         self.local_crops_number = local_crops_number
@@ -88,10 +90,10 @@ class DataAugmentationDINO(object):
         self.mean = mean
         self.std = std
         self._legacy_augmentor = _build_legacy_augmentor(
-            use_legacy_augmentor,
+            self.use_legacy_augmentor,
             mean,
             std,
-            switch=legacy_augmentor_switch,
+            switch=self.legacy_augmentor_switch,
         )
 
         logger.info("###################################")
@@ -367,25 +369,25 @@ if __name__ == "__main__":
             size = 224,
             transform=a,
         )
-    save_max, save_ = 100, 0
-    for idx, (data_idx, _) in enumerate(data):
-        save_ += 1
-        out_dir = create_dir_time(
-                base_dir='/data/work/output_dir/aug_out_110_2',
-                prefix=f'{idx}_aug'                   
-            )
-        save_index(data_idx, out_dir, prefix='augVis')
-        if save_ > save_max:
-            break
+    # save_max, save_ = 1, 0
+    # for idx, (data_idx, _) in enumerate(data):
+    #     save_ += 1
+    #     out_dir = create_dir_time(
+    #             base_dir='/data/work/output_dir/aug_out_110_2',
+    #             prefix=f'{idx}_aug'                   
+    #         )
+    #     save_index(data_idx, out_dir, prefix='augVis')
+    #     if save_ > save_max:
+    #         break
         
     # pass
     dataloader = torch.utils.data.DataLoader(
         data,
         batch_size=8,
         num_workers=2,
-        pin_memory=True,
+        pin_memory=False,
         drop_last=True,
-        persistent_workers=True,
+        persistent_workers=False,
         collate_fn=collate_fn,
     )
     from tqdm import tqdm

@@ -37,6 +37,7 @@ class AugmentSwitch:
     crop_background_value: float = 1.0 # white
     crop_background_min: float = 0.0
     crop_background_max: float = 1.0
+    info_keys: tuple[str, ...] | None = ("shift")
 
 
 class Augmentor:
@@ -49,12 +50,19 @@ class Augmentor:
         use_normalize: bool = True,
     ):
         self.sw = switches
+        self.noise_std = noise_std
         self.mean = mean
         self.std = std
         self.use_normalize = use_normalize
         self.tensor_normalize = v2.Normalize(mean=mean, std=std)
 
         self.aug_dic: OrderedDict[str, Any] = OrderedDict()
+        self.info_keys = None
+        if switches.info_keys is not None:
+            if isinstance(switches.info_keys, str):
+                self.info_keys = {switches.info_keys}
+            else:
+                self.info_keys = set(switches.info_keys)
 
         if self.sw.use_crop:
             if self.sw.crop_background_mode == "random":
@@ -113,7 +121,25 @@ class Augmentor:
 
             img = self._maybe_norm(img)
             out[name] = img
-            if info is not None:
+            if info is not None and self._keep_info(name):
                 out[f"{name}_info"] = info
 
         return out
+
+    def _keep_info(self, name: str) -> bool:
+        if self.info_keys is None:
+            return True
+        return name in self.info_keys or f"{name}_info" in self.info_keys
+
+    def __getstate__(self):
+        # Rebuild transforms in worker to avoid pickling torch tensor buffers.
+        return dict(
+            switches=self.sw,
+            noise_std=self.noise_std,
+            mean=self.mean,
+            std=self.std,
+            use_normalize=self.use_normalize,
+        )
+
+    def __setstate__(self, state):
+        self.__init__(**state)

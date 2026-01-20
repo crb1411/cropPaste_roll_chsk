@@ -28,6 +28,7 @@ from dinov3.utils import count_parameters
 from dinov3.new_train.models.inverse_patch import InversePatchEmbeddingMLP
 from dinov3.new_train.utils import get_device
 from dinov3.data.legacy_augment import AugmentSwitch
+from dinov3.new_train.loss import SharpnessLoss
 
 logger = logging.getLogger("dinov3")
 
@@ -235,6 +236,13 @@ class SSLMetaArch(nn.Module):
         self.gram_ema_teacher = False
         self.has_gram_teacher = False
         self.gram_teacher_initialized = False
+        
+        
+        self.sharpen_head_weight = float(OmegaConf.select(cfg, "sharpen_head_weight", default=0.0))
+        if self.sharpen_head_weight > 0.0:
+            self.sharpen_loss = SharpnessLoss(
+                H_target=0
+            )
         if self.gram_use_loss:
             # Gram regularization
             self.gram_loss = GramLoss(
@@ -816,6 +824,23 @@ class SSLMetaArch(nn.Module):
         )
         loss_dict["ibot_loss"] = ibot_patch_loss
         loss_accumulator += self.ibot_loss_weight * ibot_patch_loss
+        
+        # sharpen_head loss
+        if self.sharpen_head_weight > 0.0:
+            self.sharpen_data = getattr(self, "sharpen_data", {}) or {}
+            self.sharpen_data.update({
+                "cls_after_head": student_global["cls_after_head"],
+                "masked_patch_after_head": student_global["masked_patch_after_head"],
+                "masked_patch_centered": teacher_global["masked_patch_centered"],
+            })
+            if not hasattr(self, 'sharpen_loss'):
+                sharpen_head_loss = self.sharpen_loss(
+                    sharpen_data=self.sharpen_data,
+                    iteration=iteration,
+                    logger_freq=logger_freq,
+                    logger_loss="sharpen_head_loss",
+                )
+                # loss_dict["sharpen_head_loss"] = sharpen_head_loss
 
         # Gram loss
         if self.gram_use_loss:

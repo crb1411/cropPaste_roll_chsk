@@ -45,6 +45,7 @@ class CropPaste:
         self.grid_snap = grid_snap
         self.antialias = antialias
         self.interpolate_mode = interpolate_mode
+        self.seed = seed
         self.rng = torch.Generator().manual_seed(seed)
 
     @staticmethod
@@ -263,3 +264,25 @@ class CropPaste:
             uncovered_idx=uncovered_idx,
         )
         return canvas, info
+
+    def __getstate__(self):
+        # Rebuild RNG in worker; avoid pickling torch.Generator.
+        return dict(
+            resize_scale_h=self.resize_scale_h,
+            resize_scale_w=self.resize_scale_w,
+            crop_scale=self.crop_scale,
+            crop_prob=self.crop_prob,
+            roll_prob=self.roll_prob,
+            split_prob=self.split_prob,
+            split_count_range=self.split_count_range,
+            split_shuffle_prob=self.split_shuffle_prob,
+            background=self.background,
+            tile=self.tile,
+            grid_snap=self.grid_snap,
+            antialias=self.antialias,
+            interpolate_mode=self.interpolate_mode,
+            seed=self.seed,
+        )
+
+    def __setstate__(self, state):
+        self.__init__(**state)
