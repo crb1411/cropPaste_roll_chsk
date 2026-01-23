@@ -10,19 +10,6 @@ from dinov3.distributed import get_process_subgroup, get_subgroup_size
 
 logger = logging.getLogger("dinov3")
 
-_LOADED_STATE_KEYS: set[str] | None = None
-
-
-def set_loaded_state_keys(keys: set[str] | None) -> None:
-    global _LOADED_STATE_KEYS
-    _LOADED_STATE_KEYS = keys
-
-
-def _history_key_loaded(history_key: str) -> bool | None:
-    if _LOADED_STATE_KEYS is None:
-        return None
-    return history_key in _LOADED_STATE_KEYS or f"model.{history_key}" in _LOADED_STATE_KEYS
-
 
 class DTCH_SK(nn.Module):
     """
@@ -97,6 +84,21 @@ class DTCH_SK(nn.Module):
             return self._effective_history_size(b_local)
         return int(self.history_cache_size)
 
+    def _save_to_state_dict(self, destination, prefix, keep_vars):
+        super()._save_to_state_dict(destination, prefix, keep_vars)
+        if self._history_cache is None:
+            return
+        cache = self._history_cache if keep_vars else self._history_cache.detach()
+        destination[prefix + "_history_cache"] = cache
+        destination[prefix + "_history_cache_pos"] = torch.tensor(self._history_cache_pos)
+        destination[prefix + "_history_cache_batch"] = torch.tensor(
+            -1 if self._history_cache_batch is None else self._history_cache_batch
+        )
+        destination[prefix + "_history_cache_size_eff"] = torch.tensor(
+            -1 if self._history_cache_size_eff is None else self._history_cache_size_eff
+        )
+        destination[prefix + "_history_cache_capacity"] = torch.tensor(self._history_cache_capacity)
+
     def _load_from_state_dict(
         self,
         state_dict,
@@ -107,6 +109,16 @@ class DTCH_SK(nn.Module):
         unexpected_keys,
         error_msgs,
     ):
+        cache_key = prefix + "_history_cache"
+        cache_pos_key = prefix + "_history_cache_pos"
+        cache_batch_key = prefix + "_history_cache_batch"
+        cache_size_eff_key = prefix + "_history_cache_size_eff"
+        cache_capacity_key = prefix + "_history_cache_capacity"
+        cache = state_dict.pop(cache_key, None)
+        cache_pos = state_dict.pop(cache_pos_key, None)
+        cache_batch = state_dict.pop(cache_batch_key, None)
+        cache_size_eff = state_dict.pop(cache_size_eff_key, None)
+        cache_capacity = state_dict.pop(cache_capacity_key, None)
         super()._load_from_state_dict(
             state_dict,
             prefix,
@@ -117,23 +129,36 @@ class DTCH_SK(nn.Module):
             error_msgs,
         )
         history_key = prefix + "history_Q"
-        loaded_state = _history_key_loaded(history_key)
-        if loaded_state is None:
-            history_missing = history_key in missing_keys
-        else:
-            history_missing = not loaded_state
-        if history_missing and history_key in missing_keys:
+        if history_key in missing_keys:
             missing_keys.remove(history_key)
-        history_has_nan = torch.isnan(self.history_Q).any()
-        if history_missing or history_has_nan:
-            if history_missing:
-                logger.info(f"load {history_key} missing")
-            if history_has_nan:
-                logger.info(f"load {history_key} missing (nan)")
+        if torch.isfinite(self.history_Q).all():
+            self._history_Q_initialized = True
+        else:
             self.history_Q.fill_(float("nan"))
             self._history_Q_initialized = False
+        if cache is None or not torch.is_tensor(cache) or cache.numel() == 0:
+            self._history_cache = None
+            self._history_cache_pos = 0
+            self._history_cache_batch = None
+            self._history_cache_size_eff = None
+            self._history_cache_capacity = 0
+            return
+        self._history_cache = cache
+        self._history_cache_pos = int(cache_pos.item()) if cache_pos is not None else 0
+        cache_batch_val = int(cache_batch.item()) if cache_batch is not None else -1
+        self._history_cache_batch = None if cache_batch_val < 0 else cache_batch_val
+        cache_size_eff_val = int(cache_size_eff.item()) if cache_size_eff is not None else -1
+        if cache_size_eff_val < 0 and self._history_cache_batch is not None:
+            cache_size_eff_val = self._history_cache_batch * int(cache.shape[0])
+        self._history_cache_size_eff = None if cache_size_eff_val < 0 else cache_size_eff_val
+        if cache_capacity is not None:
+            self._history_cache_capacity = int(cache_capacity.item())
         else:
-            logger.info(f"load {history_key} success")
+            self._history_cache_capacity = int(cache.shape[0]) if cache is not None else 0
+        if self._history_cache_capacity > 0:
+            self._history_cache_pos = self._history_cache_pos % self._history_cache_capacity
+        if not self._history_Q_initialized and cache.shape[1] == self.K:
+            self.history_Q = cache.sum(dim=0)
             self._history_Q_initialized = True
 
     def _use_cache_history(self) -> bool:
@@ -148,30 +173,44 @@ class DTCH_SK(nn.Module):
             eff = b_local
         return eff
 
-    def _init_history_cache(self, Q_local: torch.Tensor, *, fill_from_history: bool) -> None:
-        _, b_local = Q_local.shape
+    def _cache_init_mode(self, b_local: int) -> str:
+        if b_local <= 0:
+            return "batch"
         eff_size = self._effective_history_size(b_local)
-        if (
+        capacity = max(1, eff_size // b_local)
+        cache_ok = (
             self._history_cache is not None
             and self._history_cache_batch == b_local
             and self._history_cache_size_eff == eff_size
-        ):
+            and self._history_cache_capacity == capacity
+            and self._history_cache.shape[0] == capacity
+            and self._history_cache.shape[1] == self.K
+            and torch.isfinite(self.history_Q).all()
+        )
+        return "checkpoint" if cache_ok else "batch"
+
+    def _init_history_cache(self, Q_local: torch.Tensor, *, init_mode: str) -> None:
+        _, b_local = Q_local.shape
+        eff_size = self._effective_history_size(b_local)
+        if init_mode == "checkpoint":
             return
-        # Re-scale history_Q if effective window changes (keeps units consistent).
-        if fill_from_history and self._history_cache_size_eff and torch.isfinite(self.history_Q).all():
-            old_eff = int(self._history_cache_size_eff)
-            if old_eff > 0:
-                hist_avg = self.history_Q / old_eff
-                self.history_Q = hist_avg * eff_size
         # Cache capacity is in units of batches.
         capacity = max(1, eff_size // b_local)
         device = Q_local.device
         dtype = Q_local.dtype
-        if fill_from_history and torch.isfinite(self.history_Q).all():
-            cache = self.history_Q.to(device=device, dtype=dtype).unsqueeze(0).repeat(capacity, 1)
-            cache = cache / capacity
-        else:
-            cache = torch.zeros((capacity, self.K), device=device, dtype=dtype)
+        # Fresh start: fill cache with current batch sum (n * sum_Q_local).
+        sum_Q_local = torch.sum(Q_local, dim=1)
+        if dist.is_initialized():
+            dist.all_reduce(sum_Q_local, group=get_process_subgroup())
+        scale = self._history_scale(b_local)
+        self.history_Q = (
+            sum_Q_local
+            * (scale / b_local)
+            / (get_subgroup_size() if dist.is_initialized() else 1)
+        )
+        self._history_Q_initialized = True
+        cache = self.history_Q.to(device=device, dtype=dtype).unsqueeze(0).repeat(capacity, 1)
+        cache = cache / capacity
         # Cache is rank-local; history_Q is synchronized via all_reduce.
         self._history_cache = cache
         self._history_cache_pos = 0
@@ -195,22 +234,9 @@ class DTCH_SK(nn.Module):
                 )
                 self._history_Q_initialized = True
             return
-        if not self._history_Q_initialized:
-            # Cache history init uses effective window length.
-            _, b_local = Q_local.shape
-            sum_Q_local = torch.sum(Q_local, dim=1)
-            if dist.is_initialized():
-                dist.all_reduce(sum_Q_local, group=get_process_subgroup())
-            eff_size = self._history_scale(b_local)
-            self.history_Q = (
-                sum_Q_local
-                * (eff_size / b_local)
-                / (get_subgroup_size() if dist.is_initialized() else 1)
-            )
-            self._history_Q_initialized = True
-        self._init_history_cache(Q_local, fill_from_history=True)
-        if self._history_cache is not None and torch.isfinite(self.history_Q).all():
-            self.history_Q = self._history_cache.sum(dim=0)
+        _, b_local = Q_local.shape
+        init_mode = self._cache_init_mode(b_local)
+        self._init_history_cache(Q_local, init_mode=init_mode)
 
     def _update_history(self, Q_local):
         if not self._use_cache_history():
